@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
   Calendar, RotateCcw, LayoutDashboard, Layers, Disc, MousePointer2, Package, 
-  DollarSign, TrendingUp, Zap, Ticket, ShoppingCart, Target, Megaphone, ChevronDown, ChevronRight, PieChart
+  DollarSign, TrendingUp, Zap, Ticket, ShoppingCart, Target, Megaphone, ChevronDown, ChevronRight, PieChart, Eye, MousePointerClick, Monitor, Plus, Equal
 } from 'lucide-react';
 import { fetchSpreadsheetData } from '../services/api';
 import { cn } from '../lib/utils';
-import { filterByDate, parseValue, formatCurrency, formatPercent, formatNumber } from '../lib/metrics';
+import { filterByDate, buildDateFilter, parseValue, formatCurrency, formatPercent, formatNumber } from '../lib/metrics';
 import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 interface MetricCardProps {
@@ -70,9 +70,9 @@ export default function Dashboard() {
 
   const tabs = [
     { name: 'Geral', icon: <LayoutDashboard size={18} /> },
-    { name: 'Campanhas', icon: <Megaphone size={18} /> },
+    { name: 'Fontes das Vendas', icon: <PieChart size={18} /> },
     { name: 'Funil', icon: <Layers size={18} /> },
-    { name: 'Fontes das Vendas', icon: <PieChart size={18} /> }
+    { name: 'Campanhas', icon: <Megaphone size={18} /> }
   ];
 
   const dateOptions = ['HOJE', 'ONTEM', 'ONTEM+HOJE', '7D', '14D', '30D', 'MÁXIMO'];
@@ -87,6 +87,11 @@ export default function Dashboard() {
         vendasIngressos: 0,
         vendasTrafego: 0,
         cpaTrafego: 0,
+        cpaTotal: 0,
+        impressoesTotal: 0,
+        cliquesTotal: 0,
+        pageViewsTotal: 0,
+        checkoutsTotal: 0,
       },
       campaigns: [] as any[],
       sources: [] as any[],
@@ -98,17 +103,19 @@ export default function Dashboard() {
     const rawMetaData = data.data["Dados da Meta"] || [];
     const rawBuyersData = data.data["Dados dos Compradores"] || [];
 
+    const dateFilterPredicate = buildDateFilter(dateRange);
+
     // Filter by date
     const metaData = rawMetaData.filter((row: any) => {
       const date = row['Data'];
-      return filterByDate(date, dateRange);
+      return dateFilterPredicate(date);
     });
 
     const buyersByDate = rawBuyersData.filter((row: any) => {
       // Assuming 'Data' or similar exists for buyers, else fallback to max / true if missing
       const date = row['Data'] || row['Data da Compra'] || row['Criado em'];
       if (!date) return true; // If no date column found, keep it
-      return filterByDate(date, dateRange);
+      return dateFilterPredicate(date);
     });
 
     const filteredBuyers = buyersByDate;
@@ -128,19 +135,21 @@ export default function Dashboard() {
     const vendasIngressos = filteredBuyers.length;
     const ticketMedio = vendasIngressos > 0 ? faturamentoTotal / vendasIngressos : 0;
 
+    // Funnel Meta Totals
+    const impressoesTotal = metaData.reduce((acc: number, row: any) => acc + parseValue(row['Impressões']), 0);
+    const cliquesTotal = metaData.reduce((acc: number, row: any) => acc + parseValue(row['Cliques no Link']), 0);
+    const pageViewsTotal = metaData.reduce((acc: number, row: any) => acc + parseValue(row['Visualizações da Página de Destino']), 0);
+    const checkoutsTotal = metaData.reduce((acc: number, row: any) => acc + parseValue(row['Iniciate Checkout']), 0);
+
     // 5. TRÁFEGO origin check
     const isTrafficSale = (b: any) => {
-      const origin = (b['Origem'] || b['UTM Source'] || b['Fonte'] || b['Campanha'] || '').toString().toLowerCase();
-      return origin.includes('meta') || origin.includes('fb') || origin.includes('insta') || origin.includes('mario') || origin.includes('ad');
+      const colFOrig = (b['utm_source'] || b['Source'] || b['Origem'] || b['Origem / utm_source'] || '').toString().trim().toUpperCase();
+      return colFOrig === 'META';
     };
 
-    let vendasTrafego = 0;
-    if (buyersByDate.length > 0 && !(buyersByDate[0]['Origem'] || buyersByDate[0]['UTM Source'] || buyersByDate[0]['Campanha'])) {
-      vendasTrafego = vendasIngressos; 
-    } else {
-      vendasTrafego = filteredBuyers.filter(isTrafficSale).length;
-    }
+    const vendasTrafego = filteredBuyers.filter(isTrafficSale).length;
     const cpaTrafego = vendasTrafego > 0 ? investimentoTotal / vendasTrafego : 0;
+    const cpaTotal = vendasIngressos > 0 ? investimentoTotal / vendasIngressos : 0;
 
 
     // --- AGRUPAMENTO DE CAMPANHAS E CONJUNTOS ---
@@ -306,7 +315,7 @@ export default function Dashboard() {
 
     return {
       geral: {
-        investimentoTotal, faturamentoTotal, lucroTotal, ticketMedio, vendasIngressos, vendasTrafego, cpaTrafego
+        investimentoTotal, faturamentoTotal, lucroTotal, ticketMedio, vendasIngressos, vendasTrafego, cpaTrafego, cpaTotal, impressoesTotal, cliquesTotal, pageViewsTotal, checkoutsTotal
       },
       campaigns,
       sources,
@@ -439,20 +448,54 @@ export default function Dashboard() {
                 <MetricCard 
                   title="Vendas (Tráfego)"
                   value={geral.vendasTrafego}
-                  subtext="Identificadas via Origem"
+                  subtext="Origem identificada como Meta"
                   icon={<Target size={24} />}
                   iconBg="bg-amber-50"
                   iconColor="text-amber-500"
                 />
-                <MetricCard 
-                  title="CPA (Tráfego)"
-                  value={formatCurrency(geral.cpaTrafego)}
-                  subtext="Investimento / Vendas de Tráfego"
-                  icon={<Disc size={24} />}
-                  iconBg="bg-rose-50"
-                  iconColor="text-rose-500"
-                  className="md:col-span-2 lg:col-span-2" 
-                />
+
+                {/* DOUBLE CPA CARD */}
+                <div className="md:col-span-2 lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 flex flex-col shadow-sm hover:shadow-md transition-shadow h-full">
+                  <h3 className="uppercase tracking-widest text-[11px] font-bold text-slate-400 mb-4 text-center">Custo por Aquisição Geral</h3>
+                  
+                  <div className="flex w-full h-full max-sm:flex-col">
+                    <div className="flex-1 flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-rose-50 text-rose-500">
+                            <Disc size={20} />
+                          </div>
+                          <span className="uppercase tracking-widest text-[11px] font-bold text-slate-500">CPA (Tráfego)</span>
+                        </div>
+                        <div className="font-outfit font-black text-[32px] tracking-tight text-slate-900 leading-none">
+                          {formatCurrency(geral.cpaTrafego)}
+                        </div>
+                      </div>
+                      <p className="text-[13px] text-slate-500 font-medium mt-3">
+                        Investimento / Vendas Meta
+                      </p>
+                    </div>
+
+                    <div className="w-px bg-slate-200 mx-8 max-sm:h-px max-sm:w-full max-sm:my-6 max-sm:mx-0"></div>
+
+                    <div className="flex-1 flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-indigo-50 text-indigo-500">
+                            <Layers size={20} />
+                          </div>
+                          <span className="uppercase tracking-widest text-[11px] font-bold text-slate-500">CPA (Total)</span>
+                        </div>
+                        <div className="font-outfit font-black text-[32px] tracking-tight text-slate-900 leading-none">
+                          {formatCurrency(geral.cpaTotal)}
+                        </div>
+                      </div>
+                      <p className="text-[13px] text-slate-500 font-medium mt-3">
+                        Investimento / Vendas Totais
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -521,8 +564,124 @@ export default function Dashboard() {
             )}
 
             {activeTab === 'Funil' && (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <div className="overflow-x-auto">
+              <div className="flex flex-col gap-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                
+                {/* Visual Funnel */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 py-10 flex flex-col items-center w-full min-h-[400px]">
+                  
+                  {/* Step 1: Impressões */}
+                  <div className="w-full max-w-3xl bg-slate-900 text-white rounded-xl py-4 flex flex-col items-center justify-center shadow-md">
+                    <div className="flex items-center gap-2 text-slate-300 text-[10px] font-bold uppercase tracking-widest mb-1">
+                      <Eye size={12} /> 1. Impressões
+                    </div>
+                    <div className="font-outfit font-black text-3xl">{formatNumber(geral.impressoesTotal)}</div>
+                  </div>
+
+                  {/* Connect 1-2 */}
+                  <div className="flex flex-col items-center my-1 relative h-12 w-full max-w-xs">
+                    <div className="w-px h-full bg-slate-200 absolute left-1/2 top-0 block"></div>
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-full px-4 py-1.5 shadow-sm whitespace-nowrap z-10 flex flex-col items-center">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Cliques / Impressão (CTR)</span>
+                      <span className="text-xs font-black text-slate-700">{formatPercent(geral.impressoesTotal > 0 ? geral.cliquesTotal / geral.impressoesTotal : 0)}</span>
+                    </div>
+                  </div>
+
+                  {/* Step 2: Cliques */}
+                  <div className="w-full max-w-2xl bg-indigo-500 text-white rounded-xl py-4 flex flex-col items-center justify-center shadow-md">
+                    <div className="flex items-center gap-2 text-indigo-100 text-[10px] font-bold uppercase tracking-widest mb-1">
+                      <MousePointerClick size={12} /> 2. Cliques no Link
+                    </div>
+                    <div className="font-outfit font-black text-3xl">{formatNumber(geral.cliquesTotal)}</div>
+                  </div>
+
+                  {/* Connect 2-3 */}
+                  <div className="flex flex-col items-center my-1 relative h-12 w-full max-w-xs">
+                    <div className="w-px h-full bg-slate-200 absolute left-1/2 top-0 block"></div>
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-full px-4 py-1.5 shadow-sm whitespace-nowrap z-10 flex flex-col items-center">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Views Pag / Clique</span>
+                      <span className="text-xs font-black text-slate-700">{formatPercent(geral.cliquesTotal > 0 ? geral.pageViewsTotal / geral.cliquesTotal : 0)}</span>
+                    </div>
+                  </div>
+
+                  {/* Step 3: Page Views */}
+                  <div className="w-full max-w-xl bg-blue-500 text-white rounded-xl py-4 flex flex-col items-center justify-center shadow-md">
+                    <div className="flex items-center gap-2 text-blue-100 text-[10px] font-bold uppercase tracking-widest mb-1">
+                      <Monitor className="rotate-90" size={12} /> 3. Page Views Destino
+                    </div>
+                    <div className="font-outfit font-black text-3xl">{formatNumber(geral.pageViewsTotal)}</div>
+                  </div>
+
+                  {/* Connect 3-4 */}
+                  <div className="flex flex-col items-center my-1 relative h-12 w-full max-w-xs">
+                    <div className="w-px h-full bg-slate-200 absolute left-1/2 top-0 block"></div>
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-full px-4 py-1.5 shadow-sm whitespace-nowrap z-10 flex flex-col items-center">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Checkout / View</span>
+                      <span className="text-xs font-black text-slate-700">{formatPercent(geral.pageViewsTotal > 0 ? geral.checkoutsTotal / geral.pageViewsTotal : 0)}</span>
+                    </div>
+                  </div>
+
+                  {/* Step 4: Initiate Checkout */}
+                  <div className="w-full max-w-lg bg-amber-500 text-white rounded-xl py-4 flex flex-col items-center justify-center shadow-md">
+                    <div className="flex items-center gap-2 text-amber-100 text-[10px] font-bold uppercase tracking-widest mb-1">
+                      <ShoppingCart size={12} /> 4. Initiate Checkout
+                    </div>
+                    <div className="font-outfit font-black text-3xl">{formatNumber(geral.checkoutsTotal)}</div>
+                  </div>
+
+                  {/* Connect 4-5 */}
+                  <div className="flex flex-col items-center my-1 relative h-12 w-full max-w-xs">
+                    <div className="w-px h-full bg-slate-200 absolute left-1/2 top-0 block"></div>
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white border border-slate-200 rounded-full px-4 py-1.5 shadow-sm whitespace-nowrap z-10 flex flex-col items-center">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Venda / Checkout</span>
+                      <span className="text-xs font-black text-slate-700">{formatPercent(geral.checkoutsTotal > 0 ? geral.vendasTrafego / geral.checkoutsTotal : 0)}</span>
+                    </div>
+                  </div>
+
+                  {/* Step 5: Vendas (Tráfego, Totais, Others) */}
+                  <div className="flex flex-col items-center gap-1 w-full max-w-md">
+                    <div className="w-full bg-emerald-500 text-white rounded-xl py-2.5 flex flex-col items-center justify-center shadow-md">
+                      <div className="flex items-center gap-2 text-emerald-100 text-[10px] font-bold uppercase tracking-widest mb-0.5">
+                        <Ticket size={12} /> 5. Vendas (Tráfego Meta)
+                      </div>
+                      <div className="font-outfit font-black text-3xl leading-none">{formatNumber(geral.vendasTrafego)}</div>
+                    </div>
+                    
+                    <div className="text-slate-300 font-black"><Plus size={16} strokeWidth={3} /></div>
+
+                    <div className="w-full relative group bg-teal-50 border border-teal-100 text-teal-800 rounded-xl py-2.5 flex flex-col items-center justify-center shadow-sm cursor-help hover:bg-teal-100 transition-colors">
+                      <span className="text-[10px] font-bold uppercase tracking-widest mb-0.5 text-teal-600/70">Vendas (Outras/Orgânicas)</span>
+                      <span className="font-outfit font-black text-3xl leading-none">{formatNumber(geral.vendasIngressos - geral.vendasTrafego)}</span>
+                      
+                      {/* Tooltip on hover */}
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 bg-slate-900 text-white text-xs rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 p-3 pointer-events-none">
+                        <div className="font-bold border-b border-slate-700 pb-2 mb-2">Origens (Outras/Orgânicas)</div>
+                        <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
+                          {metricsData.sources.filter((s:any) => s.name !== 'META' && s.count > 0).map((s:any) => (
+                            <div key={s.name} className="flex justify-between items-center">
+                              <span className="truncate pr-2 font-medium">{s.name === 'SEM ORIGEM' ? 'Desconhecida' : s.name}</span>
+                              <span className="font-bold">{s.count}</span>
+                            </div>
+                          ))}
+                          {metricsData.sources.filter((s:any) => s.name !== 'META' && s.count > 0).length === 0 && (
+                            <div className="text-slate-400 italic">Nenhuma venda encontrada</div>
+                          )}
+                        </div>
+                        <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2 h-2 bg-slate-900 rotate-45"></div>
+                      </div>
+                    </div>
+
+                    <div className="text-slate-300 font-black"><Equal size={16} strokeWidth={3} /></div>
+
+                    <div className="w-full bg-slate-50 border border-slate-200 text-slate-800 rounded-xl py-2.5 flex flex-col items-center justify-center shadow-sm hover:bg-slate-100 transition-colors">
+                      <span className="text-[10px] font-bold uppercase tracking-widest mb-0.5 text-slate-500">Vendas (Totais Globais)</span>
+                      <span className="font-outfit font-black text-3xl leading-none">{formatNumber(geral.vendasIngressos)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tabela de Campanhas - Funil */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm whitespace-nowrap">
                     <thead className="bg-indigo-50 border-b border-indigo-100 text-indigo-700 font-bold uppercase tracking-wider text-xs">
                       <tr>
@@ -581,6 +740,7 @@ export default function Dashboard() {
                     </tbody>
                   </table>
                 </div>
+              </div>
               </div>
             )}
 

@@ -8,46 +8,55 @@ export const parseValue = (val: any) => {
   return parseFloat(cleaned) || 0;
 };
 
+const referenceDate = new Date();
+
 // Parse flexible dates (YYYY-MM-DD or DD/MM/YYYY)
 const parseFlexibleDate = (dateStr: string) => {
   if (dateStr.includes('/')) {
     // try to parse DD/MM/YYYY
-    const parsed = parse(dateStr, 'dd/MM/yyyy', new Date());
+    const parsed = parse(dateStr, 'dd/MM/yyyy', referenceDate);
     if (!isNaN(parsed.getTime())) return parsed;
   }
   return parseISO(dateStr);
 };
 
-// Logica de filtro de data
-export const filterByDate = (dateStr: string, range: string) => {
-    if (!dateStr) return false;
-    
-    // Supondo que a data de referência hoje seria a máxima da planilha ou usar data atual do sistema.
-    // Como os dados parecem ser maio de 2026, e data atual também é maio de 2026, usamos Date()
-    const itemDate = startOfDay(parseFlexibleDate(dateStr)); 
-    if (isNaN(itemDate.getTime())) return false; // Invalid date format fallback
+export const buildDateFilter = (range: string) => {
+    if (range === 'MÁXIMO') return (dateStr: string) => true;
 
     const today = startOfDay(new Date());
     const yesterday = subDays(today, 1);
-    
-    switch (range) {
-        case 'HOJE':
-            return isEqual(itemDate, today);
-        case 'ONTEM':
-            return isEqual(itemDate, yesterday);
-        case 'ONTEM+HOJE':
-            return isEqual(itemDate, today) || isEqual(itemDate, yesterday);
-        case '7D':
-            return isBefore(itemDate, today) && isAfter(itemDate, subDays(today, 8));
-        case '14D':
-            return isBefore(itemDate, today) && isAfter(itemDate, subDays(today, 15));
-        case '30D':
-            return isBefore(itemDate, today) && isAfter(itemDate, subDays(today, 31));
-        case 'MÁXIMO':
-            return true;
-        default:
-            return true;
-    }
+    const d8 = subDays(today, 8);
+    const d15 = subDays(today, 15);
+    const d31 = subDays(today, 31);
+
+    return (dateStr: string) => {
+        if (!dateStr) return false;
+        
+        const itemDate = startOfDay(parseFlexibleDate(dateStr)); 
+        if (isNaN(itemDate.getTime())) return false; // Invalid date format fallback
+        
+        switch (range) {
+            case 'HOJE':
+                return isEqual(itemDate, today);
+            case 'ONTEM':
+                return isEqual(itemDate, yesterday);
+            case 'ONTEM+HOJE':
+                return isEqual(itemDate, today) || isEqual(itemDate, yesterday);
+            case '7D':
+                return isBefore(itemDate, today) && isAfter(itemDate, d8);
+            case '14D':
+                return isBefore(itemDate, today) && isAfter(itemDate, d15);
+            case '30D':
+                return isBefore(itemDate, today) && isAfter(itemDate, d31);
+            default:
+                return true;
+        }
+    };
+};
+
+// Retro-compatibility just in case it's used elsewhere
+export const filterByDate = (dateStr: string, range: string) => {
+    return buildDateFilter(range)(dateStr);
 };
 
 export const formatCurrency = (val: number) => {
