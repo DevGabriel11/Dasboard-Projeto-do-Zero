@@ -35,6 +35,15 @@ export const buildDateFilter = (range: string) => {
         const itemDate = startOfDay(parseFlexibleDate(dateStr)); 
         if (isNaN(itemDate.getTime())) return false; // Invalid date format fallback
         
+        if (range.startsWith('CUSTOM:')) {
+            const parts = range.split(':')[1].split('|');
+            if (parts.length === 2) {
+                const s = startOfDay(parseISO(parts[0]));
+                const e = startOfDay(parseISO(parts[1]));
+                return (isEqual(itemDate, s) || isAfter(itemDate, s)) && (isEqual(itemDate, e) || isBefore(itemDate, e));
+            }
+        }
+        
         switch (range) {
             case 'HOJE':
                 return isEqual(itemDate, today);

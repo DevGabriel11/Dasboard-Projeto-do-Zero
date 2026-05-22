@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { 
   Calendar, RotateCcw, LayoutDashboard, Layers, Disc, MousePointer2, Package, 
-  DollarSign, TrendingUp, Zap, Ticket, ShoppingCart, Target, Megaphone, ChevronDown, ChevronRight, PieChart, Eye, MousePointerClick, Monitor, Plus, Equal
+  DollarSign, TrendingUp, Zap, Ticket, ShoppingCart, Target, Megaphone, ChevronDown, ChevronRight, PieChart, Eye, MousePointerClick, Monitor, Plus, Equal, Image, ExternalLink, Search
 } from 'lucide-react';
 import { fetchSpreadsheetData } from '../services/api';
 import { cn } from '../lib/utils';
@@ -46,6 +46,10 @@ export default function Dashboard() {
 
   const [activeTab, setActiveTab] = useState('Geral');
   const [dateRange, setDateRange] = useState('HOJE');
+  const [customDates, setCustomDates] = useState({ start: '', end: '' });
+  const [pageSort, setPageSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'salesMeta', direction: 'desc'});
+  const [creativeSort, setCreativeSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'investimento', direction: 'desc'});
+  const [creativeFilter, setCreativeFilter] = useState('');
   
   // Expanded Campaign rows
   const [expandedCampaigns, setExpandedCampaigns] = useState<Record<string, boolean>>({});
@@ -72,7 +76,8 @@ export default function Dashboard() {
     { name: 'Geral', icon: <LayoutDashboard size={18} /> },
     { name: 'Fontes das Vendas', icon: <PieChart size={18} /> },
     { name: 'Funil', icon: <Layers size={18} /> },
-    { name: 'Campanhas', icon: <Megaphone size={18} /> }
+    { name: 'Campanhas', icon: <Megaphone size={18} /> },
+    { name: 'Criativos', icon: <Image size={18} /> }
   ];
 
   const dateOptions = ['HOJE', 'ONTEM', 'ONTEM+HOJE', '7D', '14D', '30D', 'MÁXIMO'];
@@ -94,6 +99,7 @@ export default function Dashboard() {
         checkoutsTotal: 0,
       },
       campaigns: [] as any[],
+      creatives: [] as any[],
       sources: [] as any[],
       totalSalesWithSource: 0,
       pagesList: [] as any[]
@@ -169,6 +175,7 @@ export default function Dashboard() {
           landingPageViews: 0,
           initiateCheckout: 0,
           comprasTrafego: 0, // Vendas atreladas à campanha
+          faturamentoTrafego: 0,
           setsMap: {} as Record<string, any>
         };
       }
@@ -209,9 +216,11 @@ export default function Dashboard() {
 
     // Mapeamento extra: Tenta encontrar as vendas por campanha
     filteredBuyers.filter(isTrafficSale).forEach((b: any) => {
-      const campUtm = (b['Campanha'] || b['UTM Campaign'] || '').toString();
+      const campUtm = (b['utm_campaign'] || b['Campanha'] || b['UTM Campaign'] || '').toString();
       if (campUtm && campaignsMap[campUtm]) {
         campaignsMap[campUtm].comprasTrafego += 1;
+        const valStr = b['Valor'] || b['Valor Bruto'] || b['Preço'] || b['Faturamento'] || b['Valor Pago'] || '0';
+        campaignsMap[campUtm].faturamentoTrafego += parseValue(valStr);
       }
     });
 
@@ -225,6 +234,7 @@ export default function Dashboard() {
         cpc: c.cliques > 0 ? cInvestimento / c.cliques : 0,
         ctr: c.impressoes > 0 ? c.cliques / c.impressoes : 0,
         cpa: c.comprasTrafego > 0 ? cInvestimento / c.comprasTrafego : 0,
+        roas: cInvestimento > 0 ? c.faturamentoTrafego / cInvestimento : 0,
         sets: Object.values(c.setsMap).map((s: any) => {
           const sInvestimento = s.gastoBruto * 1.1215;
           return {
@@ -373,8 +383,63 @@ export default function Dashboard() {
       }
     });
 
+    // --- AGRUPAMENTO DE CRIATIVOS ---
+    const creativesMap: Record<string, any> = {};
+    const rawCreativesLinks = data.data["Link dos criativos"] || [];
+    const creativeLinks: Record<string, string> = {};
+    rawCreativesLinks.forEach((row: any) => {
+       const adName = (row['Criativos'] || row['Criativo'] || row['Nome do Anúncio'] || row['Nome'] || '').toString().trim().toUpperCase();
+       if (adName) {
+           creativeLinks[adName] = row['Link'] || row['Link dos criativos'] || '';
+       }
+    });
+
+    metaData.forEach((row: any) => {
+      const adName = (row['Nome do Anúncio'] || 'Desconhecido').toString().trim();
+      const key = adName.toUpperCase();
+      
+      if (!creativesMap[key]) {
+        creativesMap[key] = {
+           name: adName,
+           link: creativeLinks[key] || '',
+           gastoBruto: 0,
+           impressoes: 0,
+           cliques: 0,
+           vendas: 0,
+        };
+      }
+      
+      creativesMap[key].gastoBruto += parseValue(row['Gasto']);
+      creativesMap[key].impressoes += parseValue(row['Impressões']);
+      creativesMap[key].cliques += parseValue(row['Cliques no Link']);
+    });
+
+    filteredBuyers.filter(isTrafficSale).forEach((b: any) => {
+        if (b.utm_content) {
+            try {
+                const parsed = JSON.parse(b.utm_content);
+                if (parsed.co) {
+                    const adName = parsed.co.toString().trim().toUpperCase();
+                    if (creativesMap[adName]) {
+                        creativesMap[adName].vendas += 1;
+                    }
+                }
+            } catch(e) {}
+        }
+    });
+
+    const creatives = Object.values(creativesMap).map((c: any) => {
+      const cInvestimento = c.gastoBruto * 1.1215;
+      return {
+        ...c,
+        investimento: cInvestimento,
+        ctr: c.impressoes > 0 ? c.cliques / c.impressoes : 0,
+        cpa: c.vendas > 0 ? cInvestimento / c.vendas : 0,
+        conv: c.cliques > 0 ? c.vendas / c.cliques : 0
+      };
+    }).sort((a: any, b: any) => b.investimento - a.investimento);
+
     const pagesList = Object.values(pagesMap)
-      .filter(p => p.pageViews > 0 || p.salesMeta > 0 || p.salesOther > 0)
       .sort((a, b) => b.salesMeta - a.salesMeta);
 
     return {
@@ -382,6 +447,7 @@ export default function Dashboard() {
         investimentoTotal, faturamentoTotal, lucroTotal, ticketMedio, vendasIngressos, vendasTrafego, cpaTrafego, cpaTotal, impressoesTotal, cliquesTotal, pageViewsTotal, checkoutsTotal
       },
       campaigns,
+      creatives,
       sources,
       totalSalesWithSource,
       pagesList
@@ -393,6 +459,67 @@ export default function Dashboard() {
   const toggleCampaign = (campName: string) => {
     setExpandedCampaigns(prev => ({ ...prev, [campName]: !prev[campName] }));
   };
+
+  const togglePageSort = (column: string) => {
+    if (pageSort.column === column) {
+      setPageSort(prev => ({ column, direction: prev.direction === 'asc' ? 'desc' : 'asc' }));
+    } else {
+      setPageSort({ column, direction: 'desc' });
+    }
+  };
+
+  const toggleCreativeSort = (column: string) => {
+    if (creativeSort.column === column) {
+      setCreativeSort(prev => ({ column, direction: prev.direction === 'asc' ? 'desc' : 'asc' }));
+    } else {
+      setCreativeSort({ column, direction: 'desc' });
+    }
+  };
+
+  const sortedCreatives = useMemo(() => {
+    return [...metricsData.creatives].sort((a: any, b: any) => {
+      let valA = a[creativeSort.column] || 0;
+      let valB = b[creativeSort.column] || 0;
+      
+      if (creativeSort.column === 'name') {
+        return creativeSort.direction === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
+      }
+      
+      return creativeSort.direction === 'asc' ? valA - valB : valB - valA;
+    });
+  }, [metricsData.creatives, creativeSort]);
+
+  const sortedPages = useMemo(() => {
+    return [...metricsData.pagesList].sort((a: any, b: any) => {
+      let valA = a[pageSort.column] || 0;
+      let valB = b[pageSort.column] || 0;
+      
+      if (pageSort.column === 'taxIC') {
+        valA = a.pageViews > 0 ? a.checkouts / a.pageViews : 0;
+        valB = b.pageViews > 0 ? b.checkouts / b.pageViews : 0;
+      } else if (pageSort.column === 'taxVenda') {
+        valA = a.checkouts > 0 ? a.salesMeta / a.checkouts : 0;
+        valB = b.checkouts > 0 ? b.salesMeta / b.checkouts : 0;
+      } else if (pageSort.column === 'url') {
+        return pageSort.direction === 'asc' ? a.slug.localeCompare(b.slug) : b.slug.localeCompare(a.slug);
+      }
+      
+      return pageSort.direction === 'asc' ? valA - valB : valB - valA;
+    });
+  }, [metricsData.pagesList, pageSort]);
+
+  const campaignTotals = useMemo(() => {
+    return metricsData.campaigns.reduce((acc, c: any) => {
+      acc.investimento += c.investimento || 0;
+      acc.impressoes += c.impressoes || 0;
+      acc.cliques += c.cliques || 0;
+      acc.compras += c.comprasTrafego || 0;
+      acc.faturamento += c.faturamentoTrafego || 0;
+      acc.landingPageViews += c.landingPageViews || 0;
+      acc.initiateCheckout += c.initiateCheckout || 0;
+      return acc;
+    }, { investimento: 0, impressoes: 0, cliques: 0, compras: 0, faturamento: 0, landingPageViews: 0, initiateCheckout: 0 });
+  }, [metricsData.campaigns]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-24">
@@ -413,9 +540,12 @@ export default function Dashboard() {
             {dateOptions.map(opt => (
               <button 
                 key={opt}
-                onClick={() => setDateRange(opt)}
+                onClick={() => {
+                  setDateRange(opt);
+                  setCustomDates({ start: '', end: '' });
+                }}
                 className={cn(
-                  "px-4 py-2 text-xs font-black rounded-md transition-all",
+                  "px-3 py-2 text-xs font-black rounded-md transition-all",
                   dateRange === opt 
                     ? "bg-white text-slate-900 shadow-sm" 
                     : "text-slate-500 hover:text-slate-800"
@@ -424,6 +554,30 @@ export default function Dashboard() {
                 {opt}
               </button>
             ))}
+            
+            <div className="flex items-center ml-1 border-l border-slate-300 pl-2 gap-1.5">
+               <input 
+                 type="date" 
+                 value={customDates.start}
+                 onChange={(e) => {
+                   const start = e.target.value;
+                   setCustomDates(prev => ({...prev, start}));
+                   if (start && customDates.end) setDateRange(`CUSTOM:${start}|${customDates.end}`);
+                 }}
+                 className="px-2 py-1 text-[10px] font-bold uppercase rounded-md border border-slate-200 bg-white text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500" 
+               />
+               <span className="text-slate-400 font-bold text-[10px] uppercase">até</span>
+               <input 
+                 type="date" 
+                 value={customDates.end}
+                 onChange={(e) => {
+                   const end = e.target.value;
+                   setCustomDates(prev => ({...prev, end}));
+                   if (customDates.start && end) setDateRange(`CUSTOM:${customDates.start}|${end}`);
+                 }}
+                 className="px-2 py-1 text-[10px] font-bold uppercase rounded-md border border-slate-200 bg-white text-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500" 
+               />
+            </div>
           </div>
 
           <button 
@@ -567,17 +721,19 @@ export default function Dashboard() {
             {activeTab === 'Campanhas' && (
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-500">
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm whitespace-nowrap">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-xs">
+                  <table className="w-full text-left text-sm whitespace-nowrap lg:whitespace-normal">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
                       <tr>
-                        <th className="px-6 py-4">Campanha / Conjunto</th>
-                        <th className="px-6 py-4 text-right">Gasto (+12%)</th>
-                        <th className="px-6 py-4 text-right">Impressões</th>
-                        <th className="px-6 py-4 text-right">CPM</th>
-                        <th className="px-6 py-4 text-right">Cliques</th>
-                        <th className="px-6 py-4 text-right">CPC</th>
-                        <th className="px-6 py-4 text-right">CTR</th>
-                        <th className="px-6 py-4 text-right">Compras</th>
+                        <th className="px-3 py-3">Campanha / Conjunto</th>
+                        <th className="px-3 py-3 text-right">Gasto (+12%)</th>
+                        <th className="px-3 py-3 text-right">Impressões</th>
+                        <th className="px-3 py-3 text-right">CPM</th>
+                        <th className="px-3 py-3 text-right">Cliques</th>
+                        <th className="px-3 py-3 text-right">CPC</th>
+                        <th className="px-3 py-3 text-right">CTR</th>
+                        <th className="px-3 py-3 text-right">Compras</th>
+                        <th className="px-3 py-3 text-right">CPA</th>
+                        <th className="px-3 py-3 text-right">ROAS</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -587,42 +743,62 @@ export default function Dashboard() {
                             className="hover:bg-slate-50 transition-colors cursor-pointer group"
                             onClick={() => toggleCampaign(camp.name)}
                           >
-                            <td className="px-6 py-4 font-bold text-slate-900 flex items-center gap-2 max-w-[300px] xl:max-w-md">
-                              {expandedCampaigns[camp.name] ? <ChevronDown size={14} className="text-slate-400 group-hover:text-indigo-500" /> : <ChevronRight size={14} className="text-slate-400 group-hover:text-indigo-500" />}
+                            <td className="px-3 py-3 font-bold text-slate-900 flex items-center gap-2 max-w-[200px] xl:max-w-[300px]">
+                              {expandedCampaigns[camp.name] ? <ChevronDown size={14} className="text-slate-400 group-hover:text-indigo-500 shrink-0" /> : <ChevronRight size={14} className="text-slate-400 group-hover:text-indigo-500 shrink-0" />}
                               <span className="truncate" title={camp.name}>{camp.name}</span>
                             </td>
-                            <td className="px-6 py-4 text-right font-medium text-slate-900">{formatCurrency(camp.investimento)}</td>
-                            <td className="px-6 py-4 text-right font-medium">{formatNumber(camp.impressoes)}</td>
-                            <td className="px-6 py-4 text-right">{formatCurrency(camp.cpm)}</td>
-                            <td className="px-6 py-4 text-right font-medium">{formatNumber(camp.cliques)}</td>
-                            <td className="px-6 py-4 text-right">{formatCurrency(camp.cpc)}</td>
-                            <td className="px-6 py-4 text-right">{formatPercent(camp.ctr)}</td>
-                            <td className="px-6 py-4 text-right font-bold text-emerald-600">{camp.comprasTrafego}</td>
+                            <td className="px-3 py-3 text-right font-medium text-slate-900">{formatCurrency(camp.investimento)}</td>
+                            <td className="px-3 py-3 text-right font-medium">{formatNumber(camp.impressoes)}</td>
+                            <td className="px-3 py-3 text-right">{formatCurrency(camp.cpm)}</td>
+                            <td className="px-3 py-3 text-right font-medium">{formatNumber(camp.cliques)}</td>
+                            <td className="px-3 py-3 text-right">{formatCurrency(camp.cpc)}</td>
+                            <td className="px-3 py-3 text-right">{formatPercent(camp.ctr)}</td>
+                            <td className="px-3 py-3 text-right font-bold text-emerald-600 border-l border-slate-100">{camp.comprasTrafego}</td>
+                            <td className="px-3 py-3 text-right font-bold text-slate-700">{formatCurrency(camp.cpa)}</td>
+                            <td className="px-3 py-3 text-right font-bold text-indigo-600">{camp.roas.toFixed(2)}x</td>
                           </tr>
                           
                           {expandedCampaigns[camp.name] && camp.sets.map((set: any) => (
                             <tr key={`${camp.name}-${set.name}`} className="bg-slate-50/50 hover:bg-slate-100/50 transition-colors">
-                              <td className="px-6 py-3 pl-12 text-slate-600 flex items-center gap-2 max-w-[300px] xl:max-w-md before:content-[''] before:w-1 before:h-full before:bg-slate-300 before:absolute relative">
-                                <Layers size={14} className="text-slate-400" />
-                                <span className="truncate text-xs" title={set.name}>{set.name}</span>
+                              <td className="px-3 py-3 pl-8 text-slate-600 flex items-center gap-2 max-w-[200px] xl:max-w-[300px] before:content-[''] before:w-1 before:h-full before:bg-slate-300 before:absolute relative">
+                                <Layers size={14} className="text-slate-400 shrink-0" />
+                                <span className="truncate text-[11px]" title={set.name}>{set.name}</span>
                               </td>
-                              <td className="px-6 py-3 text-right text-xs text-slate-900">{formatCurrency(set.investimento)}</td>
-                              <td className="px-6 py-3 text-right text-xs text-slate-600">{formatNumber(set.impressoes)}</td>
-                              <td className="px-6 py-3 text-right text-xs text-slate-500">{formatCurrency(set.cpm)}</td>
-                              <td className="px-6 py-3 text-right text-xs text-slate-600">{formatNumber(set.cliques)}</td>
-                              <td className="px-6 py-3 text-right text-xs text-slate-500">{formatCurrency(set.cpc)}</td>
-                              <td className="px-6 py-3 text-right text-xs text-slate-500">{formatPercent(set.ctr)}</td>
-                              <td className="px-6 py-3 text-right text-xs text-slate-400">-</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-900">{formatCurrency(set.investimento)}</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-600">{formatNumber(set.impressoes)}</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-500">{formatCurrency(set.cpm)}</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-600">{formatNumber(set.cliques)}</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-500">{formatCurrency(set.cpc)}</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-500">{formatPercent(set.ctr)}</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-400 border-l border-slate-100">-</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-400">-</td>
+                              <td className="px-3 py-3 text-right text-xs text-slate-400">-</td>
                             </tr>
                           ))}
                         </React.Fragment>
                       ))}
                       {metricsData.campaigns.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="px-6 py-12 text-center text-slate-500 font-medium">Nenhum dado encontrado para este período/filtro.</td>
+                          <td colSpan={10} className="px-6 py-12 text-center text-slate-500 font-medium">Nenhum dado encontrado para este período/filtro.</td>
                         </tr>
                       )}
                     </tbody>
+                    {metricsData.campaigns.length > 0 && (
+                      <tfoot className="bg-slate-100 border-t-2 border-slate-200 font-black text-slate-900">
+                        <tr>
+                          <td className="px-3 py-4 text-[11px] uppercase tracking-wider">Total do Período</td>
+                          <td className="px-3 py-4 text-right">{formatCurrency(campaignTotals.investimento)}</td>
+                          <td className="px-3 py-4 text-right">{formatNumber(campaignTotals.impressoes)}</td>
+                          <td className="px-3 py-4 text-right">{formatCurrency(campaignTotals.impressoes > 0 ? (campaignTotals.investimento / campaignTotals.impressoes) * 1000 : 0)}</td>
+                          <td className="px-3 py-4 text-right">{formatNumber(campaignTotals.cliques)}</td>
+                          <td className="px-3 py-4 text-right">{formatCurrency(campaignTotals.cliques > 0 ? campaignTotals.investimento / campaignTotals.cliques : 0)}</td>
+                          <td className="px-3 py-4 text-right">{formatPercent(campaignTotals.impressoes > 0 ? campaignTotals.cliques / campaignTotals.impressoes : 0)}</td>
+                          <td className="px-3 py-4 text-right text-emerald-700">{campaignTotals.compras}</td>
+                          <td className="px-3 py-4 text-right">{formatCurrency(campaignTotals.compras > 0 ? campaignTotals.investimento / campaignTotals.compras : 0)}</td>
+                          <td className="px-3 py-4 text-right text-indigo-700">{campaignTotals.investimento > 0 ? (campaignTotals.faturamento / campaignTotals.investimento).toFixed(2) : '0.00'}x</td>
+                        </tr>
+                      </tfoot>
+                    )}
                   </table>
                 </div>
               </div>
@@ -745,19 +921,25 @@ export default function Dashboard() {
                 </div>
 
                 {/* Tabela de Campanhas - Funil */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm whitespace-nowrap">
-                    <thead className="bg-indigo-50 border-b border-indigo-100 text-indigo-700 font-bold uppercase tracking-wider text-xs">
+                <div className="flex flex-col gap-2 -mt-4">
+                  <div className="text-center">
+                    <h3 className="text-xs font-bold tracking-tight text-slate-500 uppercase">Funil Separado Por Campanhas</h3>
+                  </div>
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm whitespace-nowrap lg:whitespace-normal">
+                    <thead className="bg-indigo-50 border-b border-indigo-100 text-indigo-700 font-bold uppercase tracking-wider text-[11px]">
                       <tr>
-                        <th className="px-6 py-4">Campanha / Conjunto</th>
-                        <th className="px-6 py-4 text-center">Impressões</th>
-                        <th className="px-6 py-4 text-center text-indigo-400">&rarr;</th>
-                        <th className="px-6 py-4 text-center">Cliques no Link</th>
-                        <th className="px-6 py-4 text-center text-indigo-400">&rarr;</th>
-                        <th className="px-6 py-4 text-center">Vz da Pag.<br/><span className="text-[10px] font-normal text-indigo-500">Visualizações</span></th>
-                        <th className="px-6 py-4 text-center text-indigo-400">&rarr;</th>
-                        <th className="px-6 py-4 text-center">IC<br/><span className="text-[10px] font-normal text-indigo-500">Iniciate Checkout</span></th>
+                        <th className="px-3 py-3">Campanha / Conjunto</th>
+                        <th className="px-3 py-3 text-center">Impressões</th>
+                        <th className="px-2 py-3 text-center text-indigo-400">&rarr;</th>
+                        <th className="px-3 py-3 text-center">Cliques no Link</th>
+                        <th className="px-2 py-3 text-center text-indigo-400">&rarr;</th>
+                        <th className="px-3 py-3 text-center">Vz da Pag.<br/><span className="text-[10px] font-normal text-indigo-500">Visualizações</span></th>
+                        <th className="px-2 py-3 text-center text-indigo-400">&rarr;</th>
+                        <th className="px-3 py-3 text-center">IC<br/><span className="text-[10px] font-normal text-indigo-500">Iniciate Checkout</span></th>
+                        <th className="px-2 py-3 text-center text-indigo-400">&rarr;</th>
+                        <th className="px-3 py-3 text-center">Vendas<br/><span className="text-[10px] font-normal text-indigo-500">Tráfego Pago</span></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
@@ -767,45 +949,139 @@ export default function Dashboard() {
                             className="hover:bg-slate-50 transition-colors cursor-pointer group bg-slate-50/20"
                             onClick={() => toggleCampaign(camp.name)}
                           >
-                            <td className="px-6 py-4 font-bold text-slate-900 flex items-center gap-2 max-w-[300px] xl:max-w-md">
-                              {expandedCampaigns[camp.name] ? <ChevronDown size={14} className="text-slate-400 group-hover:text-indigo-500" /> : <ChevronRight size={14} className="text-slate-400 group-hover:text-indigo-500" />}
+                            <td className="px-3 py-3 font-bold text-slate-900 flex items-center gap-2 max-w-[200px] xl:max-w-[300px]">
+                              {expandedCampaigns[camp.name] ? <ChevronDown size={14} className="text-slate-400 group-hover:text-indigo-500 shrink-0" /> : <ChevronRight size={14} className="text-slate-400 group-hover:text-indigo-500 shrink-0" />}
                               <span className="truncate" title={camp.name}>{camp.name}</span>
                             </td>
-                            <td className="px-6 py-4 text-center font-medium bg-slate-50/50">{formatNumber(camp.impressoes)}</td>
-                            <td className="px-2 py-4 text-center text-xs text-slate-400">{formatPercent(camp.ctr)}</td>
-                            <td className="px-6 py-4 text-center font-medium bg-blue-50/40 text-blue-800">{formatNumber(camp.cliques)}</td>
-                            <td className="px-2 py-4 text-center text-xs text-slate-400">{formatPercent(camp.cliques > 0 ? camp.landingPageViews / camp.cliques : 0)}</td>
-                            <td className="px-6 py-4 text-center font-medium bg-amber-50/40 text-amber-800">{formatNumber(camp.landingPageViews)}</td>
-                            <td className="px-2 py-4 text-center text-xs text-slate-400">{formatPercent(camp.landingPageViews > 0 ? camp.initiateCheckout / camp.landingPageViews : 0)}</td>
-                            <td className="px-6 py-4 text-center font-bold bg-emerald-50/40 text-emerald-800">{formatNumber(camp.initiateCheckout)}</td>
+                            <td className="px-3 py-3 text-center font-medium bg-slate-50/50">{formatNumber(camp.impressoes)}</td>
+                            <td className="px-2 py-3 text-center text-xs text-slate-400">{formatPercent(camp.ctr)}</td>
+                            <td className="px-3 py-3 text-center font-medium bg-blue-50/40 text-blue-800">{formatNumber(camp.cliques)}</td>
+                            <td className="px-2 py-3 text-center text-xs text-slate-400">{formatPercent(camp.cliques > 0 ? camp.landingPageViews / camp.cliques : 0)}</td>
+                            <td className="px-3 py-3 text-center font-medium bg-amber-50/40 text-amber-800">{formatNumber(camp.landingPageViews)}</td>
+                            <td className="px-2 py-3 text-center text-xs text-slate-400">{formatPercent(camp.landingPageViews > 0 ? camp.initiateCheckout / camp.landingPageViews : 0)}</td>
+                            <td className="px-3 py-3 text-center font-bold bg-emerald-50/40 text-emerald-800">{formatNumber(camp.initiateCheckout)}</td>
+                            <td className="px-2 py-3 text-center text-xs text-slate-400">{formatPercent(camp.initiateCheckout > 0 ? camp.comprasTrafego / camp.initiateCheckout : 0)}</td>
+                            <td className="px-3 py-3 text-center font-black bg-indigo-50/40 text-indigo-800">{formatNumber(camp.comprasTrafego)}</td>
                           </tr>
                           
                           {expandedCampaigns[camp.name] && camp.sets.map((set: any) => (
                             <tr key={`${camp.name}-${set.name}`} className="bg-white hover:bg-slate-50 transition-colors">
-                              <td className="px-6 py-3 pl-12 text-slate-600 flex items-center gap-2 max-w-[300px] xl:max-w-md relative">
-                                <Layers size={14} className="text-slate-400" />
-                                <span className="truncate text-xs" title={set.name}>{set.name}</span>
+                              <td className="px-3 py-3 pl-8 text-slate-600 flex items-center gap-2 max-w-[200px] xl:max-w-[300px] relative">
+                                <Layers size={14} className="text-slate-400 shrink-0" />
+                                <span className="truncate text-[11px]" title={set.name}>{set.name}</span>
                               </td>
-                              <td className="px-6 py-3 text-center text-xs text-slate-600">{formatNumber(set.impressoes)}</td>
+                              <td className="px-3 py-3 text-center text-xs text-slate-600">{formatNumber(set.impressoes)}</td>
                               <td className="px-2 py-3 text-center text-[10px] text-slate-400 font-medium">{formatPercent(set.ctr)}</td>
-                              <td className="px-6 py-3 text-center text-xs text-blue-700 font-medium">{formatNumber(set.cliques)}</td>
+                              <td className="px-3 py-3 text-center text-xs text-blue-700 font-medium">{formatNumber(set.cliques)}</td>
                               <td className="px-2 py-3 text-center text-[10px] text-slate-400 font-medium">{formatPercent(set.cliques > 0 ? set.landingPageViews / set.cliques : 0)}</td>
-                              <td className="px-6 py-3 text-center text-xs text-amber-700 font-medium">{formatNumber(set.landingPageViews)}</td>
+                              <td className="px-3 py-3 text-center text-xs text-amber-700 font-medium">{formatNumber(set.landingPageViews)}</td>
                               <td className="px-2 py-3 text-center text-[10px] text-slate-400 font-medium">{formatPercent(set.landingPageViews > 0 ? set.initiateCheckout / set.landingPageViews : 0)}</td>
-                              <td className="px-6 py-3 text-center text-xs text-emerald-700 font-bold">{formatNumber(set.initiateCheckout)}</td>
+                              <td className="px-3 py-3 text-center text-xs text-emerald-700 font-bold">{formatNumber(set.initiateCheckout)}</td>
+                              <td className="px-2 py-3 text-center text-xs text-slate-300">-</td>
+                              <td className="px-3 py-3 text-center text-xs text-slate-300">-</td>
                             </tr>
                           ))}
                         </React.Fragment>
                       ))}
                       {metricsData.campaigns.length === 0 && (
                         <tr>
-                          <td colSpan={8} className="px-6 py-12 text-center text-slate-500 font-medium">Nenhum dado encontrado para este período.</td>
+                          <td colSpan={10} className="px-6 py-12 text-center text-slate-500 font-medium">Nenhum dado encontrado para este período.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                    {metricsData.campaigns.length > 0 && (
+                      <tfoot className="bg-indigo-100/50 border-t-2 border-indigo-200 font-black text-indigo-950">
+                        <tr>
+                          <td className="px-3 py-4 text-[11px] uppercase tracking-wider">Total do Período</td>
+                          <td className="px-3 py-4 text-center">{formatNumber(campaignTotals.impressoes)}</td>
+                          <td className="px-2 py-4 text-center text-indigo-500">{formatPercent(campaignTotals.impressoes > 0 ? campaignTotals.cliques / campaignTotals.impressoes : 0)}</td>
+                          <td className="px-3 py-4 text-center text-blue-900">{formatNumber(campaignTotals.cliques)}</td>
+                          <td className="px-2 py-4 text-center text-indigo-500">{formatPercent(campaignTotals.cliques > 0 ? campaignTotals.landingPageViews / campaignTotals.cliques : 0)}</td>
+                          <td className="px-3 py-4 text-center text-amber-900">{formatNumber(campaignTotals.landingPageViews)}</td>
+                          <td className="px-2 py-4 text-center text-indigo-500">{formatPercent(campaignTotals.landingPageViews > 0 ? campaignTotals.initiateCheckout / campaignTotals.landingPageViews : 0)}</td>
+                          <td className="px-3 py-4 text-center text-emerald-900">{formatNumber(campaignTotals.initiateCheckout)}</td>
+                          <td className="px-2 py-4 text-center text-indigo-500">{formatPercent(campaignTotals.initiateCheckout > 0 ? campaignTotals.compras / campaignTotals.initiateCheckout : 0)}</td>
+                          <td className="px-3 py-4 text-center text-indigo-900 font-black">{formatNumber(campaignTotals.compras)}</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'Criativos' && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-500">
+                <div className="p-6 border-b border-slate-200 flex items-center justify-between flex-wrap gap-4">
+                  <h3 className="text-lg font-black tracking-tight text-slate-800">Performance dos Criativos</h3>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                    <input 
+                      type="text" 
+                      placeholder="Filtrar criativo..." 
+                      value={creativeFilter}
+                      onChange={e => setCreativeFilter(e.target.value)}
+                      className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all w-64"
+                    />
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm whitespace-nowrap lg:whitespace-normal">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
+                      <tr>
+                        <th className="px-4 py-4 cursor-pointer hover:bg-slate-100" onClick={() => toggleCreativeSort('name')}>Criativo {creativeSort.column === 'name' && (creativeSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-4 text-center">Link</th>
+                        <th className="px-4 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCreativeSort('investimento')}>Gasto {creativeSort.column === 'investimento' && (creativeSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCreativeSort('impressoes')}>Impressões {creativeSort.column === 'impressoes' && (creativeSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCreativeSort('cliques')}>Cliques {creativeSort.column === 'cliques' && (creativeSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCreativeSort('ctr')}>CTR {creativeSort.column === 'ctr' && (creativeSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-4 text-center cursor-pointer hover:bg-slate-100" onClick={() => toggleCreativeSort('vendas')}>Vendas {creativeSort.column === 'vendas' && (creativeSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCreativeSort('cpa')}>CPA {creativeSort.column === 'cpa' && (creativeSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-4 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCreativeSort('conv')}>Conv. {creativeSort.column === 'conv' && (creativeSort.direction === 'asc' ? '↑' : '↓')}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-slate-600">
+                      {sortedCreatives
+                        .filter((c: any) => c.name.toLowerCase().includes(creativeFilter.toLowerCase()))
+                        .map((c: any) => (
+                        <tr key={c.name} className="hover:bg-slate-50/50 transition-colors">
+                          <td className="px-4 py-4 font-bold text-slate-800">{c.name}</td>
+                          <td className="px-4 py-4 text-center">
+                            {c.link ? (
+                              <a 
+                                href={c.link} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-indigo-50 text-indigo-600 font-bold text-[11px] hover:bg-indigo-100 transition-colors"
+                              >
+                                <ExternalLink size={12} />
+                                Ver Criativo
+                              </a>
+                            ) : (
+                              <span className="text-xs text-slate-400 font-medium">-</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-4 text-right font-medium">{formatCurrency(c.investimento)}</td>
+                          <td className="px-4 py-4 text-right font-medium">{formatNumber(c.impressoes)}</td>
+                          <td className="px-4 py-4 text-right font-medium">{formatNumber(c.cliques)}</td>
+                          <td className="px-4 py-4 text-right font-medium">{formatPercent(c.ctr)}</td>
+                          <td className="px-4 py-4 text-center font-black text-indigo-700">{c.vendas}</td>
+                          <td className="px-4 py-4 text-right font-bold text-rose-600">{formatCurrency(c.cpa)}</td>
+                          <td className="px-4 py-4 text-right font-bold text-emerald-600">{formatPercent(c.conv)}</td>
+                        </tr>
+                      ))}
+                      {sortedCreatives.filter((c: any) => c.name.toLowerCase().includes(creativeFilter.toLowerCase())).length === 0 && (
+                        <tr>
+                          <td colSpan={9} className="px-6 py-12 text-center text-slate-500 font-medium">
+                            Nenhum criativo encontrado.
+                          </td>
                         </tr>
                       )}
                     </tbody>
                   </table>
                 </div>
-              </div>
               </div>
             )}
 
@@ -948,17 +1224,17 @@ export default function Dashboard() {
                     <table className="w-full text-left text-sm whitespace-nowrap">
                       <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                         <tr>
-                          <th className="px-6 py-4">Página</th>
-                          <th className="px-6 py-4 text-right">Acessos</th>
-                          <th className="px-6 py-4 text-right">Checkouts</th>
-                          <th className="px-6 py-4 text-right">Taxa IC</th>
-                          <th className="px-6 py-4 text-right">Vendas (Tráfego)</th>
-                          <th className="px-6 py-4 text-right">Tx. Venda</th>
-                          <th className="px-6 py-4 text-right bg-slate-50 border-l border-slate-200">Vendas (Orgânico/Outros)</th>
+                          <th className="px-6 py-4 cursor-pointer hover:bg-slate-100" onClick={() => togglePageSort('url')}>Página {pageSort.column === 'url' && (pageSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => togglePageSort('pageViews')}>Acessos {pageSort.column === 'pageViews' && (pageSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => togglePageSort('checkouts')}>Checkouts {pageSort.column === 'checkouts' && (pageSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => togglePageSort('taxIC')}>Taxa IC {pageSort.column === 'taxIC' && (pageSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => togglePageSort('salesMeta')}>Vendas (Tráfego) {pageSort.column === 'salesMeta' && (pageSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-6 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => togglePageSort('taxVenda')}>Tx. Venda {pageSort.column === 'taxVenda' && (pageSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-6 py-4 text-right bg-slate-50 border-l border-slate-200 cursor-pointer hover:bg-slate-100" onClick={() => togglePageSort('salesOther')}>Vendas (Orgânico/Outros) {pageSort.column === 'salesOther' && (pageSort.direction === 'asc' ? '↑' : '↓')}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 text-slate-700">
-                        {metricsData.pagesList.map((page: any) => {
+                        {sortedPages.map((page: any) => {
                            const taxIC = page.pageViews > 0 ? page.checkouts / page.pageViews : 0;
                            const taxVenda = page.checkouts > 0 ? page.salesMeta / page.checkouts : 0;
                            return (
@@ -997,12 +1273,14 @@ export default function Dashboard() {
           </>
         )}
         
-        {lastUpdated && (
-          <div className="mt-12 flex justify-center items-center gap-2 text-xs font-bold text-slate-400">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            Última sincronização: {lastUpdated.toLocaleTimeString()} 
-          </div>
-        )}
+        <div className="mt-16 mb-8 flex flex-col items-center justify-center gap-2 text-center">
+          {lastUpdated && (
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-400">
+              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+              Última sincronização: {lastUpdated.toLocaleTimeString()} 
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );
