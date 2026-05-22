@@ -95,7 +95,8 @@ export default function Dashboard() {
       },
       campaigns: [] as any[],
       sources: [] as any[],
-      totalSalesWithSource: 0
+      totalSalesWithSource: 0,
+      pagesList: [] as any[]
     };
 
     if (!data || !data.data) return defaultMetrics;
@@ -313,13 +314,77 @@ export default function Dashboard() {
       bg: COLOR_BG[i % COLOR_BG.length]
     }));
 
+    // --- ANALISE DE PAGINAS ---
+    const pagesMap: Record<string, { url: string, slug: string, pageViews: number, checkouts: number, salesMeta: number, salesOther: number }> = {};
+    
+    const getSlug = (url: string) => {
+      try {
+        const urlStr = url.startsWith('http') ? url : 'https://' + url;
+        const u = new URL(urlStr);
+        const path = u.pathname.replace(/\/$/, "");
+        return path.substring(path.lastIndexOf('/') + 1) || u.hostname;
+      } catch(e) {
+        let parts = url.split('/').filter(Boolean);
+        return parts[parts.length - 1] || url;
+      }
+    };
+
+    const adToUrl: Record<string, string> = {};
+    rawBuyersData.forEach((row: any) => {
+      if (row.utm_content) {
+        try {
+          const parsed = JSON.parse(row.utm_content);
+          if (parsed.co && parsed.url) {
+             const cleanUrl = parsed.url.trim();
+             adToUrl[parsed.co] = cleanUrl;
+             if (!pagesMap[cleanUrl]) {
+               pagesMap[cleanUrl] = { url: cleanUrl, slug: getSlug(cleanUrl), pageViews: 0, checkouts: 0, salesMeta: 0, salesOther: 0 };
+             }
+          }
+        } catch(e) {}
+      }
+    });
+
+    metaData.forEach((row: any) => {
+      const adName = row['Nome do Anúncio'];
+      if (adName && adToUrl[adName]) {
+         const url = adToUrl[adName];
+         pagesMap[url].pageViews += parseValue(row['Visualizações da Página de Destino']);
+         pagesMap[url].checkouts += parseValue(row['Iniciate Checkout']);
+      }
+    });
+
+    buyersByDate.forEach((row: any) => {
+      if (row.utm_content) {
+        try {
+          const parsed = JSON.parse(row.utm_content);
+          if (parsed.url) {
+            const cleanUrl = parsed.url.trim();
+            if (!pagesMap[cleanUrl]) {
+               pagesMap[cleanUrl] = { url: cleanUrl, slug: getSlug(cleanUrl), pageViews: 0, checkouts: 0, salesMeta: 0, salesOther: 0 };
+            }
+            if (isTrafficSale(row)) {
+               pagesMap[cleanUrl].salesMeta += 1;
+            } else {
+               pagesMap[cleanUrl].salesOther += 1;
+            }
+          }
+        } catch(e) {}
+      }
+    });
+
+    const pagesList = Object.values(pagesMap)
+      .filter(p => p.pageViews > 0 || p.salesMeta > 0 || p.salesOther > 0)
+      .sort((a, b) => b.salesMeta - a.salesMeta);
+
     return {
       geral: {
         investimentoTotal, faturamentoTotal, lucroTotal, ticketMedio, vendasIngressos, vendasTrafego, cpaTrafego, cpaTotal, impressoesTotal, cliquesTotal, pageViewsTotal, checkoutsTotal
       },
       campaigns,
       sources,
-      totalSalesWithSource
+      totalSalesWithSource,
+      pagesList
     };
   }, [data, dateRange]);
 
@@ -745,8 +810,9 @@ export default function Dashboard() {
             )}
 
             {activeTab === 'Fontes das Vendas' && (
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                {/* Distribuição por Fonte */}
+              <div className="flex flex-col gap-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                  {/* Distribuição por Fonte */}
                 <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex flex-col h-[600px]">
                   <div className="mb-4">
                     <h3 className="text-lg font-black tracking-tight text-slate-800 uppercase">Distribuição por Fonte</h3>
@@ -868,6 +934,62 @@ export default function Dashboard() {
                         </div>
                       )}
                     </div>
+                  </div>
+                </div>
+                </div>
+
+                {/* Análise de Vendas por Página */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col mt-2">
+                  <div className="p-6 border-b border-slate-200">
+                    <h3 className="text-lg font-black tracking-tight text-slate-800 uppercase">Análise de Vendas por Página</h3>
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-1">Tráfego gerado x Vendas convertidas</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm whitespace-nowrap">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                        <tr>
+                          <th className="px-6 py-4">Página</th>
+                          <th className="px-6 py-4 text-right">Acessos</th>
+                          <th className="px-6 py-4 text-right">Checkouts</th>
+                          <th className="px-6 py-4 text-right">Taxa IC</th>
+                          <th className="px-6 py-4 text-right">Vendas (Tráfego)</th>
+                          <th className="px-6 py-4 text-right">Tx. Venda</th>
+                          <th className="px-6 py-4 text-right bg-slate-50 border-l border-slate-200">Vendas (Orgânico/Outros)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-slate-700">
+                        {metricsData.pagesList.map((page: any) => {
+                           const taxIC = page.pageViews > 0 ? page.checkouts / page.pageViews : 0;
+                           const taxVenda = page.checkouts > 0 ? page.salesMeta / page.checkouts : 0;
+                           return (
+                             <tr key={page.url} className="hover:bg-slate-50 transition-colors">
+                               <td className="px-6 py-4">
+                                 <div className="font-bold text-slate-900 flex items-center gap-2">
+                                   <Monitor size={14} className="text-slate-400" />
+                                   <a href={page.url.startsWith('http') ? page.url : `https://${page.url}`} target="_blank" rel="noopener noreferrer" className="hover:text-indigo-600 transition-colors">
+                                     {page.slug}
+                                   </a>
+                                 </div>
+                                 <div className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[200px] xl:max-w-xs">{page.url}</div>
+                               </td>
+                               <td className="px-6 py-4 text-right font-medium text-slate-600">{formatNumber(page.pageViews)}</td>
+                               <td className="px-6 py-4 text-right font-medium text-slate-600">{formatNumber(page.checkouts)}</td>
+                               <td className="px-6 py-4 text-right font-bold text-amber-600 bg-amber-50/30">{formatPercent(taxIC)}</td>
+                               <td className="px-6 py-4 text-right font-black text-emerald-600">{formatNumber(page.salesMeta)}</td>
+                               <td className="px-6 py-4 text-right font-bold text-emerald-600 bg-emerald-50/30">{formatPercent(taxVenda)}</td>
+                               <td className="px-6 py-4 text-right font-medium text-slate-500 border-l border-slate-100">{formatNumber(page.salesOther)}</td>
+                             </tr>
+                           )
+                        })}
+                        {metricsData.pagesList.length === 0 && (
+                          <tr>
+                            <td colSpan={7} className="px-6 py-12 text-center text-slate-500 italic">
+                              Nenhuma página identificada no período.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>
