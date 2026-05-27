@@ -6,9 +6,21 @@ import {
 import { fetchSpreadsheetData } from '../services/api';
 import { cn } from '../lib/utils';
 import { filterByDate, buildDateFilter, parseValue, formatCurrency, formatPercent, formatNumber } from '../lib/metrics';
-import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import { PieChart as RechartsPieChart, Pie, Cell, ResponsiveContainer, Tooltip, ComposedChart, XAxis, YAxis, CartesianGrid, Legend, Area, Bar, Line } from 'recharts';
+
+const METRIC_CONFIG: Record<string, { label: string, color: string, type: 'currency' | 'number', renderType: 'bar' | 'line' }> = {
+  investimentoTotal: { label: 'Investimento Total', color: '#8b5cf6', type: 'currency', renderType: 'bar' },
+  faturamentoTotal: { label: 'Faturamento Total', color: '#10b981', type: 'currency', renderType: 'line' },
+  lucroTotal: { label: 'Lucro Total', color: '#059669', type: 'currency', renderType: 'line' },
+  ticketMedio: { label: 'Ticket Médio', color: '#818cf8', type: 'currency', renderType: 'line' },
+  vendasIngressos: { label: 'Ingressos Vendidos (Geral)', color: '#a855f7', type: 'number', renderType: 'bar' },
+  vendasTrafego: { label: 'Ingressos via Tráfego', color: '#ec4899', type: 'number', renderType: 'line' },
+  cpaTrafego: { label: 'CPA (Tráfego)', color: '#f43f5e', type: 'currency', renderType: 'line' },
+  cpaTotal: { label: 'CPA (Total)', color: '#6366f1', type: 'currency', renderType: 'line' }
+};
 
 interface MetricCardProps {
+  id?: string;
   title: string;
   value: string | number;
   subtext: string;
@@ -17,22 +29,35 @@ interface MetricCardProps {
   iconColor: string;
   valueColor?: string;
   className?: string;
+  selected?: boolean;
+  onClick?: () => void;
 }
 
-function MetricCard({ title, value, subtext, icon, iconBg, iconColor, valueColor, className }: MetricCardProps) {
+function MetricCard({ id, title, value, subtext, icon, iconBg, iconColor, valueColor, className, selected, onClick }: MetricCardProps) {
   return (
-    <div className={cn(
-      "bg-white rounded-2xl border border-slate-200 p-6 flex flex-col gap-4 shadow-sm hover:shadow-md transition-all duration-300",
-      className
-    )}>
-      <div className="flex items-center gap-3">
-        <div className={cn("p-2.5 rounded-xl", iconBg, iconColor)}>
-          {icon}
+    <div 
+      onClick={onClick}
+      className={cn(
+        "bg-white rounded-2xl border border-slate-200 p-6 flex flex-col gap-4 shadow-sm transition-all duration-300",
+        onClick && "cursor-pointer hover:shadow-md",
+        selected && "ring-2 ring-indigo-500 border-indigo-500/50",
+        !selected && onClick && "hover:border-slate-300",
+        className
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={cn("p-2.5 rounded-xl transition-colors", selected ? "bg-indigo-500 text-white" : [iconBg, iconColor])}>
+            {icon}
+          </div>
+          <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>
         </div>
-        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</span>
+        {selected && (
+          <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+        )}
       </div>
       <div>
-        <h3 className={cn("text-3xl font-black mb-1.5 tracking-tight", valueColor || "text-slate-900")}>{value}</h3>
+        <h3 className={cn("text-3xl font-black mb-1.5 tracking-tight transition-colors", valueColor || "text-slate-900")}>{value}</h3>
         <p className="text-xs text-slate-500 font-medium">{subtext}</p>
       </div>
     </div>
@@ -49,11 +74,13 @@ export default function Dashboard() {
   const [customDates, setCustomDates] = useState({ start: '', end: '' });
   const [pageSort, setPageSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'salesMeta', direction: 'desc'});
   const [creativeSort, setCreativeSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'investimento', direction: 'desc'});
+  const [campaignSort, setCampaignSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'investimento', direction: 'desc'});
   const [creativeFilter, setCreativeFilter] = useState('');
   
   // Expanded Campaign rows
   const [expandedCampaigns, setExpandedCampaigns] = useState<Record<string, boolean>>({});
-  const [activeSourceIndex, setActiveSourceIndex] = useState<number | undefined>(undefined);
+  const [selectedSourceIndices, setSelectedSourceIndices] = useState<number[]>([]);
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(['investimentoTotal', 'vendasTrafego']);
 
   const loadData = async () => {
     setLoading(true);
@@ -102,7 +129,9 @@ export default function Dashboard() {
       creatives: [] as any[],
       sources: [] as any[],
       totalSalesWithSource: 0,
-      pagesList: [] as any[]
+      totalRevenueWithSource: 0,
+      pagesList: [] as any[],
+      dailyMetrics: [] as any[]
     };
 
     if (!data || !data.data) return defaultMetrics;
@@ -214,13 +243,24 @@ export default function Dashboard() {
       cs.initiateCheckout += ic;
     });
 
-    // Mapeamento extra: Tenta encontrar as vendas por campanha
+    // Mapeamento extra: Tenta encontrar as vendas por campanha e conjunto
     filteredBuyers.filter(isTrafficSale).forEach((b: any) => {
       const campUtm = (b['utm_campaign'] || b['Campanha'] || b['UTM Campaign'] || '').toString();
+      const termUtm = (b['utm_term'] || '').toString();
+
       if (campUtm && campaignsMap[campUtm]) {
         campaignsMap[campUtm].comprasTrafego += 1;
         const valStr = b['Valor'] || b['Valor Bruto'] || b['Preço'] || b['Faturamento'] || b['Valor Pago'] || '0';
-        campaignsMap[campUtm].faturamentoTrafego += parseValue(valStr);
+        const valNum = parseValue(valStr);
+        campaignsMap[campUtm].faturamentoTrafego += valNum;
+
+        if (termUtm && campaignsMap[campUtm].setsMap[termUtm]) {
+           if (!campaignsMap[campUtm].setsMap[termUtm].comprasTrafego) campaignsMap[campUtm].setsMap[termUtm].comprasTrafego = 0;
+           if (!campaignsMap[campUtm].setsMap[termUtm].faturamentoTrafego) campaignsMap[campUtm].setsMap[termUtm].faturamentoTrafego = 0;
+           
+           campaignsMap[campUtm].setsMap[termUtm].comprasTrafego += 1;
+           campaignsMap[campUtm].setsMap[termUtm].faturamentoTrafego += valNum;
+        }
       }
     });
 
@@ -237,12 +277,18 @@ export default function Dashboard() {
         roas: cInvestimento > 0 ? c.faturamentoTrafego / cInvestimento : 0,
         sets: Object.values(c.setsMap).map((s: any) => {
           const sInvestimento = s.gastoBruto * 1.1215;
+          const comprasTrafego = s.comprasTrafego || 0;
+          const faturamentoTrafego = s.faturamentoTrafego || 0;
           return {
             ...s,
             investimento: sInvestimento,
             cpm: s.impressoes > 0 ? (sInvestimento / s.impressoes) * 1000 : 0,
             cpc: s.cliques > 0 ? sInvestimento / s.cliques : 0,
             ctr: s.impressoes > 0 ? s.cliques / s.impressoes : 0,
+            comprasTrafego,
+            cpa: comprasTrafego > 0 ? sInvestimento / comprasTrafego : 0,
+            faturamentoTrafego,
+            roas: sInvestimento > 0 ? faturamentoTrafego / sInvestimento : 0,
           };
         }).sort((a: any, b: any) => b.investimento - a.investimento)
       };
@@ -258,6 +304,7 @@ export default function Dashboard() {
       'SEM ORIGEM IDENTIFICADA': { name: 'SEM ORIGEM IDENTIFICADA', category: 'Sem Origem', count: 0, revenue: 0 }
     };
     let totalSalesWithSource = 0;
+    let totalRevenueWithSource = 0;
 
     const fillSourceMap = (row: any, increment: boolean) => {
       const colDStr = (row['utm_medium'] || row['Medium'] || row['utm_medium (D)'] || '').toString().toLowerCase().trim();
@@ -298,8 +345,10 @@ export default function Dashboard() {
       if (increment) {
         sourcesMap[key].count += 1;
         const valStr = row['Valor'] || row['Valor Bruto'] || row['Preço'] || row['Faturamento'] || row['Valor Pago'] || '0';
-        sourcesMap[key].revenue += parseValue(valStr);
+        const rawValor = parseValue(valStr);
+        sourcesMap[key].revenue += rawValor;
         totalSalesWithSource += 1;
+        totalRevenueWithSource += rawValor;
       }
     };
 
@@ -439,6 +488,89 @@ export default function Dashboard() {
       };
     }).sort((a: any, b: any) => b.investimento - a.investimento);
 
+    // --- DAILY DATA ---
+    const dailyMap: Record<string, any> = {};
+
+    const processDaily = (dateStr: string) => {
+      let dayKey = dateStr;
+      try {
+        const parts = dateStr.split('T')[0].split('-');
+        if (parts.length === 3) {
+          dayKey = `${parts[2]}/${parts[1]}`;
+        } else if (dateStr.includes('/')) {
+          const splitSlash = dateStr.split('/');
+          if (splitSlash.length >= 2) {
+            dayKey = `${splitSlash[0].padStart(2, '0')}/${splitSlash[1].padStart(2, '0')}`;
+          }
+        }
+      } catch (e) {}
+
+      // Ignora dados com datas inválidas ou textos que vieram da planilha como "Nwe"
+      if (!/^\d{2}\/\d{2}$/.test(dayKey)) return null;
+
+      if (!dailyMap[dayKey]) {
+        dailyMap[dayKey] = {
+          date: dayKey,
+          rawDate: dateStr,
+          investimentoTotal: 0,
+          faturamentoTotal: 0,
+          vendasIngressos: 0,
+          vendasTrafego: 0,
+          impressoesTotal: 0,
+          cliquesTotal: 0,
+          pageViewsTotal: 0,
+          checkoutsTotal: 0,
+        };
+      }
+      return dailyMap[dayKey];
+    }
+
+    metaData.forEach((row: any) => {
+      const d = row['Data'];
+      if (!d) return;
+      const dayData = processDaily(String(d));
+      if (!dayData) return;
+      
+      const gasto = parseValue(row['Gasto']);
+      dayData.investimentoTotal += gasto * 1.1215;
+      
+      dayData.impressoesTotal += parseValue(row['Impressões']);
+      dayData.cliquesTotal += parseValue(row['Cliques no Link']);
+      dayData.pageViewsTotal += parseValue(row['Visualizações da Página de Destino']);
+      dayData.checkoutsTotal += parseValue(row['Iniciate Checkout']);
+    });
+
+    filteredBuyers.forEach((row: any) => {
+      const d = row['Data'] || row['Data da Compra'] || row['Criado em'];
+      if (!d) return;
+      const dayData = processDaily(String(d));
+      if (!dayData) return;
+
+      const valStr = row['Valor'] || row['Valor Bruto'] || row['Preço'] || row['Faturamento'] || row['Valor Pago'] || '0';
+      dayData.faturamentoTotal += parseValue(valStr);
+      dayData.vendasIngressos += 1;
+      
+      if (isTrafficSale(row)) {
+        dayData.vendasTrafego += 1;
+      }
+    });
+
+    // Compute derived dailys
+    let dailyMetricsList = Object.values(dailyMap).map((d: any) => {
+      d.lucroTotal = d.faturamentoTotal - d.investimentoTotal;
+      d.ticketMedio = d.vendasIngressos > 0 ? d.faturamentoTotal / d.vendasIngressos : 0;
+      d.cpaTrafego = d.vendasTrafego > 0 ? d.investimentoTotal / d.vendasTrafego : 0;
+      d.cpaTotal = d.vendasIngressos > 0 ? d.investimentoTotal / d.vendasIngressos : 0;
+      return d;
+    });
+
+    // Sort by chronological order
+    dailyMetricsList.sort((a: any, b: any) => {
+      const aVal = a.date.split('/').reverse().join('');
+      const bVal = b.date.split('/').reverse().join('');
+      return aVal.localeCompare(bVal);
+    });
+
     const pagesList = Object.values(pagesMap)
       .sort((a, b) => b.salesMeta - a.salesMeta);
 
@@ -450,7 +582,9 @@ export default function Dashboard() {
       creatives,
       sources,
       totalSalesWithSource,
-      pagesList
+      totalRevenueWithSource,
+      pagesList,
+      dailyMetrics: dailyMetricsList
     };
   }, [data, dateRange]);
 
@@ -476,6 +610,23 @@ export default function Dashboard() {
     }
   };
 
+  const toggleCampaignSort = (column: string) => {
+    if (campaignSort.column === column) {
+      setCampaignSort(prev => ({ column, direction: prev.direction === 'asc' ? 'desc' : 'asc' }));
+    } else {
+      setCampaignSort({ column, direction: 'desc' });
+    }
+  };
+
+  const toggleMetric = (id: string) => {
+    setSelectedMetrics(prev => {
+      if (prev.includes(id)) {
+        return prev.filter(m => m !== id);
+      }
+      return [...prev, id];
+    });
+  };
+
   const sortedCreatives = useMemo(() => {
     return [...metricsData.creatives].sort((a: any, b: any) => {
       let valA = a[creativeSort.column] || 0;
@@ -488,6 +639,33 @@ export default function Dashboard() {
       return creativeSort.direction === 'asc' ? valA - valB : valB - valA;
     });
   }, [metricsData.creatives, creativeSort]);
+
+  const sortedCampaigns = useMemo(() => {
+    return [...metricsData.campaigns]
+      .map((camp: any) => ({
+        ...camp,
+        sets: [...camp.sets].sort((a: any, b: any) => {
+          let valA = a[campaignSort.column] || 0;
+          let valB = b[campaignSort.column] || 0;
+          
+          if (campaignSort.column === 'name') {
+            return campaignSort.direction === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
+          }
+          
+          return campaignSort.direction === 'asc' ? valA - valB : valB - valA;
+        })
+      }))
+      .sort((a: any, b: any) => {
+      let valA = a[campaignSort.column] || 0;
+      let valB = b[campaignSort.column] || 0;
+      
+      if (campaignSort.column === 'name') {
+        return campaignSort.direction === 'asc' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
+      }
+      
+      return campaignSort.direction === 'asc' ? valA - valB : valB - valA;
+    });
+  }, [metricsData.campaigns, campaignSort]);
 
   const sortedPages = useMemo(() => {
     return [...metricsData.pagesList].sort((a: any, b: any) => {
@@ -621,123 +799,214 @@ export default function Dashboard() {
         ) : (
           <>
             {activeTab === 'Geral' && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <MetricCard 
-                  title="Investimento Total"
-                  value={formatCurrency(geral.investimentoTotal)}
-                  subtext="Gasto * 1.1215"
-                  icon={<DollarSign size={24} />}
-                  iconBg="bg-blue-50"
-                  iconColor="text-blue-500"
-                  className="lg:col-span-1"
-                />
-                <MetricCard 
-                  title="Faturamento Total"
-                  value={formatCurrency(geral.faturamentoTotal)}
-                  subtext="Valor Bruto"
-                  icon={<TrendingUp size={24} />}
-                  iconBg="bg-emerald-50"
-                  iconColor="text-emerald-500"
-                />
-                <MetricCard 
-                  title="Lucro Total"
-                  value={formatCurrency(geral.lucroTotal)}
-                  subtext="Faturamento - Investimento"
-                  valueColor={geral.lucroTotal >= 0 ? "text-emerald-600" : "text-rose-600"}
-                  icon={<Zap size={24} />}
-                  iconBg={geral.lucroTotal >= 0 ? "bg-emerald-50" : "bg-rose-50"}
-                  iconColor={geral.lucroTotal >= 0 ? "text-emerald-500" : "text-rose-500"}
-                />
-                <MetricCard 
-                  title="Ticket Médio"
-                  value={formatCurrency(geral.ticketMedio)}
-                  subtext={`Para ${geral.vendasIngressos} vendas`}
-                  icon={<Ticket size={24} />}
-                  iconBg="bg-indigo-50"
-                  iconColor="text-indigo-500"
-                />
-                <MetricCard 
-                  title="Vendas (Todas)"
-                  value={geral.vendasIngressos}
-                  subtext="Cadastradas no Sheets"
-                  icon={<ShoppingCart size={24} />}
-                  iconBg="bg-purple-50"
-                  iconColor="text-purple-500"
-                />
-                <MetricCard 
-                  title="Vendas (Tráfego)"
-                  value={geral.vendasTrafego}
-                  subtext="Origem identificada como Meta"
-                  icon={<Target size={24} />}
-                  iconBg="bg-amber-50"
-                  iconColor="text-amber-500"
-                />
+              <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  <MetricCard 
+                    id="investimentoTotal"
+                    title="Investimento Total"
+                    value={formatCurrency(geral.investimentoTotal)}
+                    subtext="Gasto * 1.1215"
+                    icon={<DollarSign size={24} />}
+                    iconBg="bg-blue-50"
+                    iconColor="text-blue-500"
+                    className="lg:col-span-1"
+                    selected={selectedMetrics.includes('investimentoTotal')}
+                    onClick={() => toggleMetric('investimentoTotal')}
+                  />
+                  <MetricCard 
+                    id="faturamentoTotal"
+                    title="Faturamento Total"
+                    value={formatCurrency(geral.faturamentoTotal)}
+                    subtext="Valor Bruto"
+                    icon={<TrendingUp size={24} />}
+                    iconBg="bg-emerald-50"
+                    iconColor="text-emerald-500"
+                    selected={selectedMetrics.includes('faturamentoTotal')}
+                    onClick={() => toggleMetric('faturamentoTotal')}
+                  />
+                  <MetricCard 
+                    id="lucroTotal"
+                    title="Lucro Total"
+                    value={formatCurrency(geral.lucroTotal)}
+                    subtext="Faturamento - Investimento"
+                    valueColor={geral.lucroTotal >= 0 ? "text-emerald-600" : "text-rose-600"}
+                    icon={<Zap size={24} />}
+                    iconBg={geral.lucroTotal >= 0 ? "bg-emerald-50" : "bg-rose-50"}
+                    iconColor={geral.lucroTotal >= 0 ? "text-emerald-500" : "text-rose-500"}
+                    selected={selectedMetrics.includes('lucroTotal')}
+                    onClick={() => toggleMetric('lucroTotal')}
+                  />
+                  <MetricCard 
+                    id="ticketMedio"
+                    title="Ticket Médio"
+                    value={formatCurrency(geral.ticketMedio)}
+                    subtext={`Para ${geral.vendasIngressos} vendas`}
+                    icon={<Ticket size={24} />}
+                    iconBg="bg-indigo-50"
+                    iconColor="text-indigo-500"
+                    selected={selectedMetrics.includes('ticketMedio')}
+                    onClick={() => toggleMetric('ticketMedio')}
+                  />
+                  <MetricCard 
+                    id="vendasIngressos"
+                    title="Vendas (Todas)"
+                    value={geral.vendasIngressos}
+                    subtext="Cadastradas no Sheets"
+                    icon={<ShoppingCart size={24} />}
+                    iconBg="bg-purple-50"
+                    iconColor="text-purple-500"
+                    selected={selectedMetrics.includes('vendasIngressos')}
+                    onClick={() => toggleMetric('vendasIngressos')}
+                  />
+                  <MetricCard 
+                    id="vendasTrafego"
+                    title="Vendas (Tráfego)"
+                    value={geral.vendasTrafego}
+                    subtext="Origem identificada como Meta"
+                    icon={<Target size={24} />}
+                    iconBg="bg-amber-50"
+                    iconColor="text-amber-500"
+                    selected={selectedMetrics.includes('vendasTrafego')}
+                    onClick={() => toggleMetric('vendasTrafego')}
+                  />
+                  <MetricCard 
+                    id="cpaTrafego"
+                    title="CPA (Tráfego)"
+                    value={formatCurrency(geral.cpaTrafego)}
+                    subtext="Investimento / Vendas Meta"
+                    icon={<Disc size={24} />}
+                    iconBg="bg-rose-50"
+                    iconColor="text-rose-500"
+                    selected={selectedMetrics.includes('cpaTrafego')}
+                    onClick={() => toggleMetric('cpaTrafego')}
+                  />
+                  <MetricCard 
+                    id="cpaTotal"
+                    title="CPA (Total)"
+                    value={formatCurrency(geral.cpaTotal)}
+                    subtext="Investimento / Vendas Totais"
+                    icon={<Layers size={24} />}
+                    iconBg="bg-indigo-50"
+                    iconColor="text-indigo-500"
+                    selected={selectedMetrics.includes('cpaTotal')}
+                    onClick={() => toggleMetric('cpaTotal')}
+                  />
+                </div>
 
-                {/* DOUBLE CPA CARD */}
-                <div className="md:col-span-2 lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 flex flex-col shadow-sm hover:shadow-md transition-shadow h-full">
-                  <h3 className="uppercase tracking-widest text-[11px] font-bold text-slate-400 mb-4 text-center">Custo por Aquisição Geral</h3>
-                  
-                  <div className="flex w-full h-full max-sm:flex-col">
-                    <div className="flex-1 flex flex-col justify-between">
-                      <div>
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-rose-50 text-rose-500">
-                            <Disc size={20} />
-                          </div>
-                          <span className="uppercase tracking-widest text-[11px] font-bold text-slate-500">CPA (Tráfego)</span>
-                        </div>
-                        <div className="font-outfit font-black text-[32px] tracking-tight text-slate-900 leading-none">
-                          {formatCurrency(geral.cpaTrafego)}
-                        </div>
-                      </div>
-                      <p className="text-[13px] text-slate-500 font-medium mt-3">
-                        Investimento / Vendas Meta
-                      </p>
-                    </div>
+                <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-sm">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-xl font-bold text-slate-800">Histórico Diário</h3>
+                    <button 
+                      onClick={() => setSelectedMetrics([])}
+                      className="text-sm px-3 py-1.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors font-medium border border-slate-200"
+                    >
+                      Limpar seleção
+                    </button>
+                  </div>
+                  <p className="text-sm text-slate-500 mb-8">Métricas agregadas por dia baseado nos cards selecionados</p>
 
-                    <div className="w-px bg-slate-200 mx-8 max-sm:h-px max-sm:w-full max-sm:my-6 max-sm:mx-0"></div>
+                  <div className="h-[400px] w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <ComposedChart data={metricsData.dailyMetrics}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                        <XAxis dataKey="date" tick={{ fill: '#64748b', fontSize: 12 }} tickLine={false} axisLine={false} dy={10} />
+                        
+                        {selectedMetrics.length > 0 && (
+                          <YAxis 
+                            yAxisId="left" 
+                            orientation="left"
+                            tick={{ fill: '#64748b', fontSize: 12 }} 
+                            tickLine={false} 
+                            axisLine={false} 
+                            tickFormatter={METRIC_CONFIG[selectedMetrics[0]]?.type === 'currency' ? (val) => `R$ ${val}` : undefined} 
+                          />
+                        )}
+                        {selectedMetrics.length > 1 && (
+                          <YAxis 
+                            yAxisId="right" 
+                            orientation="right"
+                            tick={{ fill: '#64748b', fontSize: 12 }} 
+                            tickLine={false} 
+                            axisLine={false} 
+                            tickFormatter={METRIC_CONFIG[selectedMetrics[1]]?.type === 'currency' ? (val) => `R$ ${val}` : undefined}
+                          />
+                        )}
+                        
+                        <Tooltip 
+                          formatter={(value: any, name: string) => {
+                            const metricKey = Object.keys(METRIC_CONFIG).find(k => METRIC_CONFIG[k].label === name);
+                            if (metricKey && METRIC_CONFIG[metricKey].type === 'currency') {
+                              return [formatCurrency(value), name];
+                            }
+                            return [value, name];
+                          }}
+                          contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)' }}
+                        />
+                        <Legend wrapperStyle={{ paddingTop: '20px' }} iconType="circle" />
+                        
+                        {selectedMetrics.map((key, index) => {
+                          const config = METRIC_CONFIG[key];
+                          if (!config) return null;
+                          const yAxisId = index === 0 ? 'left' : 'right';
 
-                    <div className="flex-1 flex flex-col justify-between">
-                      <div>
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-indigo-50 text-indigo-500">
-                            <Layers size={20} />
-                          </div>
-                          <span className="uppercase tracking-widest text-[11px] font-bold text-slate-500">CPA (Total)</span>
-                        </div>
-                        <div className="font-outfit font-black text-[32px] tracking-tight text-slate-900 leading-none">
-                          {formatCurrency(geral.cpaTotal)}
-                        </div>
-                      </div>
-                      <p className="text-[13px] text-slate-500 font-medium mt-3">
-                        Investimento / Vendas Totais
-                      </p>
-                    </div>
+                          if (index === 0) {
+                            return (
+                              <Bar 
+                                key={key} 
+                                dataKey={key} 
+                                name={config.label} 
+                                fill={config.color} 
+                                radius={[4, 4, 0, 0]} 
+                                yAxisId={yAxisId} 
+                              />
+                            );
+                          }
+                          return (
+                            <Line 
+                              key={key} 
+                              type="monotone" 
+                              dataKey={key} 
+                              name={config.label} 
+                              stroke={config.color} 
+                              strokeWidth={3} 
+                              dot={{ r: 4, strokeWidth: 2, fill: '#fff' }} 
+                              activeDot={{ r: 6 }} 
+                              yAxisId={yAxisId} 
+                            />
+                          );
+                        })}
+                      </ComposedChart>
+                    </ResponsiveContainer>
                   </div>
                 </div>
               </div>
             )}
 
             {activeTab === 'Campanhas' && (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-500">
-                <div className="overflow-x-auto">
+              <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm px-4 py-3 rounded-xl flex items-center gap-3">
+                  <span className="font-bold">Aviso:</span>
+                  <span>A análise por conjunto de anúncios considera informações de vendas (Compras, CPA e ROAS) a partir do dia <strong>23/05</strong>.</span>
+                </div>
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm whitespace-nowrap lg:whitespace-normal">
                     <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
                       <tr>
-                        <th className="px-3 py-3">Campanha / Conjunto</th>
-                        <th className="px-3 py-3 text-right">Gasto (+12%)</th>
-                        <th className="px-3 py-3 text-right">Impressões</th>
-                        <th className="px-3 py-3 text-right">CPM</th>
-                        <th className="px-3 py-3 text-right">Cliques</th>
-                        <th className="px-3 py-3 text-right">CPC</th>
-                        <th className="px-3 py-3 text-right">CTR</th>
-                        <th className="px-3 py-3 text-right">Compras</th>
-                        <th className="px-3 py-3 text-right">CPA</th>
-                        <th className="px-3 py-3 text-right">ROAS</th>
+                        <th className="px-3 py-3 cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('name')}>Campanha / Conjunto {campaignSort.column === 'name' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('investimento')}>Gasto (+12%) {campaignSort.column === 'investimento' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('impressoes')}>Impressões {campaignSort.column === 'impressoes' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('cpm')}>CPM {campaignSort.column === 'cpm' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('cliques')}>Cliques {campaignSort.column === 'cliques' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('cpc')}>CPC {campaignSort.column === 'cpc' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('ctr')}>CTR {campaignSort.column === 'ctr' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('comprasTrafego')}>Compras {campaignSort.column === 'comprasTrafego' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('cpa')}>CPA {campaignSort.column === 'cpa' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        <th className="px-3 py-3 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleCampaignSort('roas')}>ROAS {campaignSort.column === 'roas' && (campaignSort.direction === 'asc' ? '↑' : '↓')}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {metricsData.campaigns.map((camp: any) => (
+                      {sortedCampaigns.map((camp: any) => (
                         <React.Fragment key={camp.name}>
                           <tr 
                             className="hover:bg-slate-50 transition-colors cursor-pointer group"
@@ -770,9 +1039,9 @@ export default function Dashboard() {
                               <td className="px-3 py-3 text-right text-xs text-slate-600">{formatNumber(set.cliques)}</td>
                               <td className="px-3 py-3 text-right text-xs text-slate-500">{formatCurrency(set.cpc)}</td>
                               <td className="px-3 py-3 text-right text-xs text-slate-500">{formatPercent(set.ctr)}</td>
-                              <td className="px-3 py-3 text-right text-xs text-slate-400 border-l border-slate-100">-</td>
-                              <td className="px-3 py-3 text-right text-xs text-slate-400">-</td>
-                              <td className="px-3 py-3 text-right text-xs text-slate-400">-</td>
+                              <td className="px-3 py-3 text-right text-xs font-bold text-emerald-600 border-l border-slate-100">{set.comprasTrafego}</td>
+                              <td className="px-3 py-3 text-right text-xs font-bold text-slate-700">{formatCurrency(set.cpa)}</td>
+                              <td className="px-3 py-3 text-right text-xs font-bold text-indigo-600">{set.roas.toFixed(2)}x</td>
                             </tr>
                           ))}
                         </React.Fragment>
@@ -801,6 +1070,7 @@ export default function Dashboard() {
                     )}
                   </table>
                 </div>
+              </div>
               </div>
             )}
 
@@ -922,8 +1192,11 @@ export default function Dashboard() {
 
                 {/* Tabela de Campanhas - Funil */}
                 <div className="flex flex-col gap-2 -mt-4">
-                  <div className="text-center">
+                  <div className="text-center flex flex-col items-center gap-2">
                     <h3 className="text-xs font-bold tracking-tight text-slate-500 uppercase">Funil Separado Por Campanhas</h3>
+                    <p className="text-xs text-amber-600 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200/50">
+                      <strong>Aviso:</strong> A análise por conjunto de anúncios considera informações de vendas a partir de <strong>23/05</strong>.
+                    </p>
                   </div>
                   <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                     <div className="overflow-x-auto">
@@ -943,7 +1216,7 @@ export default function Dashboard() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-slate-700">
-                      {metricsData.campaigns.map((camp: any) => (
+                      {sortedCampaigns.map((camp: any) => (
                         <React.Fragment key={camp.name}>
                           <tr 
                             className="hover:bg-slate-50 transition-colors cursor-pointer group bg-slate-50/20"
@@ -977,8 +1250,8 @@ export default function Dashboard() {
                               <td className="px-3 py-3 text-center text-xs text-amber-700 font-medium">{formatNumber(set.landingPageViews)}</td>
                               <td className="px-2 py-3 text-center text-[10px] text-slate-400 font-medium">{formatPercent(set.landingPageViews > 0 ? set.initiateCheckout / set.landingPageViews : 0)}</td>
                               <td className="px-3 py-3 text-center text-xs text-emerald-700 font-bold">{formatNumber(set.initiateCheckout)}</td>
-                              <td className="px-2 py-3 text-center text-xs text-slate-300">-</td>
-                              <td className="px-3 py-3 text-center text-xs text-slate-300">-</td>
+                              <td className="px-2 py-3 text-center text-[10px] text-slate-400 font-medium">{formatPercent(set.initiateCheckout > 0 ? set.comprasTrafego / set.initiateCheckout : 0)}</td>
+                              <td className="px-3 py-3 text-center text-xs text-indigo-700 font-black">{formatNumber(set.comprasTrafego)}</td>
                             </tr>
                           ))}
                         </React.Fragment>
@@ -1089,15 +1362,15 @@ export default function Dashboard() {
               <div className="flex flex-col gap-8 animate-in fade-in slide-in-from-bottom-2 duration-500">
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                   {/* Distribuição por Fonte */}
-                <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex flex-col h-[600px]">
+                <div className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm flex flex-col min-h-[600px] h-fit">
                   <div className="mb-4">
                     <h3 className="text-lg font-black tracking-tight text-slate-800 uppercase">Distribuição por Fonte</h3>
                     <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-1">Origem das Vendas Captadas</p>
                   </div>
                   
-                  <div className="flex-1 w-full h-full min-h-[300px]">
+                  <div className="w-full flex justify-center mt-2 mb-4" style={{ height: '320px' }}>
                     {metricsData.sources.filter((s:any) => s.count > 0).length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%">
+                      <ResponsiveContainer width="100%" height={320}>
                         <RechartsPieChart>
                           <Pie
                             data={metricsData.sources.filter((s:any) => s.count > 0)}
@@ -1110,12 +1383,12 @@ export default function Dashboard() {
                             stroke="none"
                           >
                             {metricsData.sources.filter((s:any) => s.count > 0).map((entry: any, index: number) => {
-                              const isSelected = activeSourceIndex === entry.originalIndex;
+                              const isSelected = selectedSourceIndices.includes(entry.originalIndex);
                               return (
                                 <Cell 
                                   key={`cell-${entry.originalIndex}`} 
                                   fill={entry.hex} 
-                                  fillOpacity={activeSourceIndex !== undefined && !isSelected ? 0.3 : 1}
+                                  fillOpacity={selectedSourceIndices.length > 0 && !isSelected ? 0.3 : 1}
                                   className="transition-all duration-300 outline-none"
                                   style={{
                                     transform: isSelected ? 'scale(1.05)' : 'scale(1)',
@@ -1134,6 +1407,37 @@ export default function Dashboard() {
                     ) : (
                       <div className="flex justify-center items-center h-full text-slate-400 font-medium">Nenhum dado encontrado.</div>
                     )}
+                  </div>
+                  
+                  <div className="mt-6 border-t border-slate-100 pt-6 animate-in fade-in duration-300">
+                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider mb-4">Análise da Seleção</h4>
+                    {(() => {
+                      const selectedSources = metricsData.sources.filter((s:any) => selectedSourceIndices.includes(s.originalIndex));
+                      const totalSelectedVendas = selectedSources.reduce((acc: number, curr: any) => acc + curr.count, 0);
+                      const totalSelectedReceita = selectedSources.reduce((acc: number, curr: any) => acc + curr.revenue, 0);
+                      const percVendas = metricsData.totalSalesWithSource > 0 ? totalSelectedVendas / metricsData.totalSalesWithSource : 0;
+
+                      return (
+                        <div className="flex flex-col gap-3">
+                          <div className="flex justify-between items-center bg-indigo-50 p-3 rounded-lg border border-indigo-100 mb-2">
+                            <span className="text-xs font-bold text-indigo-600 uppercase">Vendas na Seleção</span>
+                            <div className="text-right">
+                              <div className="text-sm font-black text-indigo-700">{totalSelectedVendas} <span className="text-xs font-medium opacity-80">vendas</span></div>
+                              <div className="text-xs font-bold text-indigo-600">{formatCurrency(totalSelectedReceita)}</div>
+                            </div>
+                          </div>
+
+                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border border-slate-100">
+                            <span className="text-xs font-bold text-slate-500">% das {metricsData.totalSalesWithSource} Vendas Totais</span>
+                            <span className="text-sm font-black text-indigo-600">{formatPercent(percVendas)}</span>
+                          </div>
+                          <div className="flex justify-between items-center bg-slate-50 p-3 rounded-lg border border-slate-100">
+                            <span className="text-xs font-bold text-slate-500">% da Receita Total</span>
+                            <span className="text-sm font-black text-indigo-600">{formatPercent(metricsData.totalRevenueWithSource > 0 ? totalSelectedReceita / metricsData.totalRevenueWithSource : 0)}</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -1154,18 +1458,39 @@ export default function Dashboard() {
                         { title: "Outros", items: metricsData.sources.filter((s:any) => s.category === "Outros") }
                       ].filter(g => g.items.length > 0).map((group) => (
                         <div key={group.title} className="flex flex-col gap-3">
-                          <h4 className="font-black text-slate-800 uppercase tracking-tight ml-1">{group.title}</h4>
+                          <h4 className="flex items-center flex-wrap gap-2 font-black text-slate-800 uppercase tracking-tight ml-1">
+                            <span>{group.title}</span>
+                            {group.items.length > 1 && (() => {
+                              const gSales = group.items.reduce((acc: number, curr: any) => acc + curr.count, 0);
+                              const gRev = group.items.reduce((acc: number, curr: any) => acc + curr.revenue, 0);
+                              const gPerc = metricsData.totalSalesWithSource > 0 ? gSales / metricsData.totalSalesWithSource : 0;
+                              return (
+                                <div className="flex items-center gap-2 mt-px">
+                                  <span className="text-[10px] pb-[2px] text-slate-300">|</span>
+                                  <span className="text-[10px] text-slate-500 font-bold">{gSales} vendas</span>
+                                  <span className="text-[10px] pb-[2px] text-slate-300">|</span>
+                                  <span className="text-[10px] text-slate-500 font-bold">{formatPercent(gPerc)} do total</span>
+                                  <span className="text-[10px] pb-[2px] text-slate-300">|</span>
+                                  <span className="text-[10px] text-slate-500 font-bold">{formatCurrency(gRev)}</span>
+                                </div>
+                              );
+                            })()}
+                          </h4>
                           <div className="flex flex-col gap-2">
                             {group.items.map((source: any) => {
                               const percentage = metricsData.totalSalesWithSource > 0 
                                 ? (source.count / metricsData.totalSalesWithSource) 
                                 : 0;
-                              const isSelected = activeSourceIndex === source.originalIndex;
+                              const isSelected = selectedSourceIndices.includes(source.originalIndex);
 
                               return (
                                 <div 
                                   key={source.name} 
-                                  onClick={() => setActiveSourceIndex(isSelected ? undefined : source.originalIndex)}
+                                  onClick={() => setSelectedSourceIndices(prev => 
+                                    prev.includes(source.originalIndex) 
+                                      ? prev.filter(i => i !== source.originalIndex)
+                                      : [...prev, source.originalIndex]
+                                  )}
                                   className={cn("flex items-center justify-between p-4 rounded-xl border bg-white cursor-pointer transition-all group", 
                                     isSelected ? "border-indigo-500 shadow-md ring-2 ring-indigo-500/20" : "border-slate-100 shadow-sm hover:shadow-md hover:border-slate-200"
                                   )}
