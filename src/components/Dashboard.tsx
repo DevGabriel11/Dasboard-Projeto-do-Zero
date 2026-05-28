@@ -97,6 +97,13 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadData();
+    
+    // Auto-refresh da página a cada 5 minutos
+    const intervalId = setInterval(() => {
+      loadData();
+    }, 5 * 60 * 1000);
+
+    return () => clearInterval(intervalId);
   }, []);
 
   const tabs = [
