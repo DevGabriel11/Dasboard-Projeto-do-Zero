@@ -75,7 +75,9 @@ export default function Dashboard() {
   const [pageSort, setPageSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'salesMeta', direction: 'desc'});
   const [creativeSort, setCreativeSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'investimento', direction: 'desc'});
   const [campaignSort, setCampaignSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'investimento', direction: 'desc'});
+  const [fgpSort, setFgpSort] = useState<{column: string, direction: 'asc' | 'desc'}>({column: 'data', direction: 'desc'});
   const [creativeFilter, setCreativeFilter] = useState('');
+  const [fgpFilter, setFgpFilter] = useState('');
   
   // Expanded Campaign rows
   const [expandedCampaigns, setExpandedCampaigns] = useState<Record<string, boolean>>({});
@@ -108,6 +110,7 @@ export default function Dashboard() {
 
   const tabs = [
     { name: 'Geral', icon: <LayoutDashboard size={18} /> },
+    { name: 'Vendas Lançamento', icon: <ShoppingCart size={18} /> },
     { name: 'Fontes das Vendas', icon: <PieChart size={18} /> },
     { name: 'Funil', icon: <Layers size={18} /> },
     { name: 'Campanhas', icon: <Megaphone size={18} /> },
@@ -138,13 +141,16 @@ export default function Dashboard() {
       totalSalesWithSource: 0,
       totalRevenueWithSource: 0,
       pagesList: [] as any[],
-      dailyMetrics: [] as any[]
+      dailyMetrics: [] as any[],
+      fgpBuyers: [] as any[],
+      fgpResume: { totalVendas: 0, faturamentoFgp: 0, ticketMedioFgp: 0 }
     };
 
     if (!data || !data.data) return defaultMetrics;
 
     const rawMetaData = data.data["Dados da Meta"] || [];
     const rawBuyersData = data.data["Dados dos Compradores"] || [];
+    const rawFgpBuyers = data.data["Dados dos Compradores - FGP"] || [];
 
     const dateFilterPredicate = buildDateFilter(dateRange);
 
@@ -160,6 +166,24 @@ export default function Dashboard() {
       if (!date) return true; // If no date column found, keep it
       return dateFilterPredicate(date);
     });
+
+    const fgpBuyersByDate = rawFgpBuyers.filter((row: any) => {
+      const date = row['Data'] || row['Data da Compra'] || row['Criado em'];
+      if (!date) return true;
+      return dateFilterPredicate(date);
+    });
+
+    let faturamentoFgp = 0;
+    fgpBuyersByDate.forEach((row: any) => {
+      const valStr = row['Valor'] || row['Valor Bruto'] || row['Preço'] || row['Faturamento'] || row['Valor Pago'] || '0';
+      faturamentoFgp += parseValue(valStr);
+    });
+    const totalVendasFgp = fgpBuyersByDate.length;
+    const fgpResume = {
+      totalVendas: totalVendasFgp,
+      faturamentoFgp,
+      ticketMedioFgp: totalVendasFgp > 0 ? faturamentoFgp / totalVendasFgp : 0
+    };
 
     const filteredBuyers = buyersByDate;
 
@@ -591,7 +615,9 @@ export default function Dashboard() {
       totalSalesWithSource,
       totalRevenueWithSource,
       pagesList,
-      dailyMetrics: dailyMetricsList
+      dailyMetrics: dailyMetricsList,
+      fgpBuyers: fgpBuyersByDate,
+      fgpResume
     };
   }, [data, dateRange]);
 
@@ -622,6 +648,14 @@ export default function Dashboard() {
       setCampaignSort(prev => ({ column, direction: prev.direction === 'asc' ? 'desc' : 'asc' }));
     } else {
       setCampaignSort({ column, direction: 'desc' });
+    }
+  };
+
+  const toggleFgpSort = (column: string) => {
+    if (fgpSort.column === column) {
+      setFgpSort(prev => ({ column, direction: prev.direction === 'asc' ? 'desc' : 'asc' }));
+    } else {
+      setFgpSort({ column, direction: 'desc' });
     }
   };
 
@@ -692,6 +726,25 @@ export default function Dashboard() {
       return pageSort.direction === 'asc' ? valA - valB : valB - valA;
     });
   }, [metricsData.pagesList, pageSort]);
+
+  const sortedFgpBuyers = useMemo(() => {
+    return [...metricsData.fgpBuyers].sort((a: any, b: any) => {
+      const getVal = (row: any, col: string) => {
+         if (col === 'valor') return parseValue(row['Valor'] || row['Valor Bruto'] || row['Preço'] || row['Faturamento'] || '0');
+         if (col === 'data') return new Date(row['Data'] || row['Data da Compra'] || row['Criado em'] || 0).getTime();
+         return (row[col] || '').toString().toLowerCase();
+      };
+
+      const valA = getVal(a, fgpSort.column);
+      const valB = getVal(b, fgpSort.column);
+      
+      if (typeof valA === 'string' && typeof valB === 'string') {
+        return fgpSort.direction === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      }
+      
+      return fgpSort.direction === 'asc' ? (valA > valB ? 1 : -1) : (valA < valB ? 1 : -1);
+    });
+  }, [metricsData.fgpBuyers, fgpSort]);
 
   const campaignTotals = useMemo(() => {
     return metricsData.campaigns.reduce((acc, c: any) => {
@@ -984,6 +1037,99 @@ export default function Dashboard() {
                         })}
                       </ComposedChart>
                     </ResponsiveContainer>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'Vendas Lançamento' && (
+              <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <MetricCard 
+                    title="Vendas FGP"
+                    value={metricsData.fgpResume.totalVendas}
+                    subtext="Cadastradas na aba"
+                    icon={<ShoppingCart size={24} />}
+                    iconBg="bg-indigo-50"
+                    iconColor="text-indigo-500"
+                  />
+                  <MetricCard 
+                    title="Faturamento FGP"
+                    value={formatCurrency(metricsData.fgpResume.faturamentoFgp)}
+                    subtext="Total Bruto na Aba FGP"
+                    icon={<TrendingUp size={24} />}
+                    iconBg="bg-emerald-50"
+                    iconColor="text-emerald-500"
+                  />
+                  <MetricCard 
+                    title="Ticket Médio"
+                    value={formatCurrency(metricsData.fgpResume.ticketMedioFgp)}
+                    subtext="Faturamento / Vendas (FGP)"
+                    icon={<Ticket size={24} />}
+                    iconBg="bg-purple-50"
+                    iconColor="text-purple-500"
+                  />
+                </div>
+
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="p-6 border-b border-slate-200 flex items-center justify-between flex-wrap gap-4">
+                    <h3 className="text-lg font-black tracking-tight text-slate-800">Transações de Lançamento (FGP)</h3>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+                      <input 
+                        type="text" 
+                        placeholder="Pesquisar venda..." 
+                        value={fgpFilter}
+                        onChange={e => setFgpFilter(e.target.value)}
+                        className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all w-64"
+                      />
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm whitespace-nowrap lg:whitespace-normal">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[11px]">
+                        <tr>
+                          <th className="px-4 py-4 cursor-pointer hover:bg-slate-100" onClick={() => toggleFgpSort('data')}>Data {fgpSort.column === 'data' && (fgpSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-4 py-4 cursor-pointer hover:bg-slate-100" onClick={() => toggleFgpSort('Nome')}>Cliente/E-mail {fgpSort.column === 'Nome' && (fgpSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-4 py-4 text-right cursor-pointer hover:bg-slate-100" onClick={() => toggleFgpSort('valor')}>Valor {fgpSort.column === 'valor' && (fgpSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-4 py-4 cursor-pointer hover:bg-slate-100" onClick={() => toggleFgpSort('utm_source')}>Origem / Source {fgpSort.column === 'utm_source' && (fgpSort.direction === 'asc' ? '↑' : '↓')}</th>
+                          <th className="px-4 py-4 cursor-pointer hover:bg-slate-100" onClick={() => toggleFgpSort('utm_campaign')}>Campanha {fgpSort.column === 'utm_campaign' && (fgpSort.direction === 'asc' ? '↑' : '↓')}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-slate-600">
+                        {sortedFgpBuyers
+                          .filter((b: any) => {
+                             if (!fgpFilter) return true;
+                             const str = JSON.stringify(b).toLowerCase();
+                             return str.includes(fgpFilter.toLowerCase());
+                          })
+                          .slice(0, 150) // Limita para UI Performance
+                          .map((b: any, idx: number) => {
+                             const dataComp = b['Data'] || b['Data da Compra'] || b['Criado em'] || '-';
+                             const dtFormatada = dataComp.length > 10 ? new Date(dataComp).toLocaleDateString('pt-BR') : dataComp;
+                             const valCru = parseValue(b['Valor'] || b['Valor Bruto'] || b['Preço'] || b['Faturamento'] || '0');
+                             const cliente = b['Nome'] || b['Comprador'] || b['E-mail'] || b['Email'] || '-';
+                             const origem = b['utm_source'] || b['Origem'] || b['Source'] || '-';
+                             const camp = b['utm_campaign'] || b['Campanha'] || b['UTM Campaign'] || '-';
+                            return (
+                              <tr key={`fgp-${idx}`} className="hover:bg-slate-50/50 transition-colors">
+                                <td className="px-4 py-4 text-xs font-bold text-slate-500">{dtFormatada}</td>
+                                <td className="px-4 py-4 font-medium text-slate-800">{cliente}</td>
+                                <td className="px-4 py-4 text-right font-black text-indigo-700">{formatCurrency(valCru)}</td>
+                                <td className="px-4 py-4 text-xs font-bold text-slate-500 uppercase">{origem}</td>
+                                <td className="px-4 py-4 text-xs text-slate-500">{camp}</td>
+                              </tr>
+                            );
+                          })}
+                        {sortedFgpBuyers.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="px-6 py-12 text-center text-slate-500 font-medium">
+                              Nenhuma venda de lançamento encontrada.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </div>
